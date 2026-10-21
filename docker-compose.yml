@@ -1,0 +1,18 @@
+services:
+  app:
+    build: .
+    image: aura-agent-backend:latest
+    container_name: aura-agent-backend
+    restart: unless-stopped
+    # Host networking: MySQL (127.0.0.1:3306) and Ollama (127.0.0.1:11434) are reached
+    # exactly as from the host, and Ollama stays bound to localhost. Listens on :8000;
+    # Open WebUI reaches it at http://host.docker.internal:8000.
+    network_mode: host
+    environment:
+      RUN_MIGRATIONS: "true"
+    volumes:
+      - ./.env:/app/.env:ro
+      - storage:/app/storage
+
+volumes:
+  storage:

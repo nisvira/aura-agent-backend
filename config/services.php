@@ -40,10 +40,10 @@ return [
         'client_id' => env('YRU_PASSPORT_CLIENT_ID'),
         'client_secret' => env('YRU_PASSPORT_CLIENT_SECRET'),
         'redirect_uri' => env('YRU_PASSPORT_REDIRECT_URI'),
-        'scopes' => env('YRU_PASSPORT_SCOPES', ''),
+        'scopes' => env('YRU_PASSPORT_SCOPES', 'openid profile email'),
         'authorize_path' => env('YRU_PASSPORT_AUTHORIZE_PATH', '/oauth/authorize'),
         'token_path' => env('YRU_PASSPORT_TOKEN_PATH', '/oauth/token'),
-        'profile_path' => env('YRU_PASSPORT_PROFILE_PATH', '/apis/v1/profile'),
+        'profile_path' => env('YRU_PASSPORT_PROFILE_PATH', '/oidc/userinfo'),
         'timeout' => (int) env('YRU_PASSPORT_TIMEOUT', 10),
     ],
 

@@ -1,0 +1,17 @@
+{
+	skip_install_trust
+	auto_https off
+	# Not needed, and port 2019 would be taken on the host with network_mode: host.
+	admin off
+	frankenphp
+}
+
+:8000 {
+	root * /app/public
+
+	# Compression buffers output, which would hold back streamed (SSE) answers.
+	@compressible not path /api/chat/stream /api/v1/chat/completions
+	encode @compressible zstd gzip
+
+	php_server
+}

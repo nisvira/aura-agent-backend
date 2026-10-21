@@ -12,10 +12,10 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 /**
- * OAuth2 client for YRU Passport (passport.yru.ac.th).
+ * OpenID Connect client for YRU Passport (passport.yru.ac.th).
  *
  * Flow: redirect user to /oauth/authorize → receive ?code → exchange for an
- * access token → GET /apis/v1/profile → create/update the local user.
+ * access token → GET /oidc/userinfo → create/update the local user.
  */
 class YruPassportService
 {
@@ -56,8 +56,7 @@ class YruPassportService
     }
 
     /**
-     * Fetch the profile of the access token's owner. Equivalent to the original
-     * Guzzle getUserInfo(), but via Laravel's HTTP client so it can be faked in tests.
+     * Fetch the OIDC claims of the access token's owner (GET /oidc/userinfo).
      */
     public function getUserInfo(string $accessToken): array
     {
@@ -73,39 +72,46 @@ class YruPassportService
     }
 
     /**
-     * Create or update the local user from a YRU Passport profile.
+     * Create or update the local user from the userinfo claims.
      *
-     * TODO: confirm the real field names returned by /apis/v1/profile; the
-     * fallbacks below cover the common shapes ({...} or {"data": {...}}).
+     * Claims: sub (always); preferred_username, name, display_name, firstname,
+     * lastname, user_type, org_unit_*, program_* (profile scope); email,
+     * email_verified (email scope).
      */
-    public function syncUser(array $profile): User
+    public function syncUser(array $claims): User
     {
-        $data = Arr::get($profile, 'data', $profile);
+        $sub = $this->first($claims, ['sub']);
 
-        $passportId = $this->first($data, ['id', 'user_id', 'sub', 'username']);
-
-        if ($passportId === null) {
+        if ($sub === null) {
             throw new UpstreamServiceException('yru_passport', 'ข้อมูลผู้ใช้จาก YRU Passport ไม่ครบถ้วน', 502);
         }
 
-        $name = $this->first($data, ['name', 'fullname', 'full_name', 'display_name'])
-            ?? trim(($data['first_name'] ?? $data['firstname'] ?? '').' '.($data['last_name'] ?? $data['lastname'] ?? ''));
+        $name = $this->first($claims, ['display_name', 'name', 'fullname_with_prefix'])
+            ?? trim(($claims['firstname'] ?? $claims['given_name'] ?? '').' '.($claims['lastname'] ?? $claims['family_name'] ?? ''));
 
-        $email = ($email = $this->first($data, ['email', 'mail'])) ? Str::lower($email) : null;
+        $email = ($email = $this->first($claims, ['email'])) ? Str::lower($email) : null;
+        $emailVerified = filter_var($claims['email_verified'] ?? false, FILTER_VALIDATE_BOOL);
 
-        // Match by email too: the account may already exist from an Open WebUI login.
-        $user = User::where('passport_id', (string) $passportId)->first()
-            ?? ($email ? User::where('email', $email)->first() : null)
+        // Link to an account created earlier through Open WebUI, but only by a verified
+        // email, so an unverified address can't take over someone else's history.
+        $user = User::where('passport_id', $sub)->first()
+            ?? ($email && $emailVerified ? User::where('email', $email)->first() : null)
             ?? new User;
 
         $user->fill([
-            'passport_id' => (string) $passportId,
-            'username' => $this->first($data, ['username', 'user_name', 'login']),
-            'name' => $name !== '' ? $name : (string) $passportId,
+            'passport_id' => $sub,
+            'username' => $this->first($claims, ['preferred_username', 'username']),
+            'name' => $name !== '' ? $name : $sub,
             'email' => $email,
-            'passport_profile' => $data,
+            'passport_profile' => $claims,
             'last_login_at' => now(),
-        ])->save();
+        ]);
+
+        if ($emailVerified && $user->email_verified_at === null) {
+            $user->email_verified_at = now();
+        }
+
+        $user->save();
 
         return $user;
     }
