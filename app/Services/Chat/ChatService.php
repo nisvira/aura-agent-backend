@@ -12,12 +12,14 @@ use App\Services\Rag\RagClient;
 use Generator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Throwable;
 
 /**
  * Chat pipeline: question → RAG search → prompt → Ollama → save both messages.
  *
  * Messages are only written after the LLM answers, so a failed call never
- * leaves a dangling user message (or an empty new session) behind.
+ * leaves a dangling user message (or an empty new session) behind. Every
+ * question, successful or not, leaves one ai_requests row (AiTrace).
  */
 class ChatService
 {
@@ -31,23 +33,23 @@ class ChatService
     /**
      * Answer using the history stored in our database (our own frontend).
      *
-     * @return array{session: ChatSession, message: ChatMessage}
+     * @return array{session: ChatSession, question: ChatMessage, message: ChatMessage}
      */
-    public function reply(User $user, string $question, ?int $sessionId = null): array
+    public function reply(User $user, string $question, ?int $sessionId = null, string $channel = 'api'): array
     {
         $session = $this->resolveSession($user, $sessionId, $question);
 
-        return $this->replyWithHistory($session, $question, $this->storedHistory($session));
+        return $this->replyWithHistory($session, $question, $this->storedHistory($session), $channel);
     }
 
     /**
      * @return Generator<int, array<string, mixed>>
      */
-    public function stream(User $user, string $question, ?int $sessionId = null): Generator
+    public function stream(User $user, string $question, ?int $sessionId = null, string $channel = 'api_stream'): Generator
     {
         $session = $this->resolveSession($user, $sessionId, $question);
 
-        yield from $this->streamWithHistory($session, $question, $this->storedHistory($session));
+        yield from $this->streamWithHistory($session, $question, $this->storedHistory($session), $channel);
     }
 
     /**
@@ -55,50 +57,84 @@ class ChatService
      * conversation on every request). The new turn is still saved to $session.
      *
      * @param  list<array{role: string, content: string}>  $history  oldest first
-     * @return array{session: ChatSession, message: ChatMessage}
+     * @return array{session: ChatSession, question: ChatMessage, message: ChatMessage}
      */
-    public function replyWithHistory(ChatSession $session, string $question, array $history): array
+    public function replyWithHistory(ChatSession $session, string $question, array $history, string $channel = 'openwebui'): array
     {
-        $chunks = $this->rag->search($question);
+        $trace = AiTrace::start($channel, $session->user_id, $question);
 
-        $answer = $this->llm->chat($this->prompts->build($question, $chunks, $this->trim($history)));
+        try {
+            $chunks = $this->retrieve($question, $trace);
 
-        return $this->persist($session, $question, $answer['content'], $chunks, $answer['stats']);
+            $trace->llmStarted($this->llm->model());
+            $answer = $this->llm->chat($this->prompts->build($question, $chunks, $this->trim($history)));
+            $trace->llmFinished($answer['stats']);
+
+            $result = $this->persist($session, $question, $answer['content'], $chunks, $answer['stats']);
+        } catch (Throwable $e) {
+            $trace->finish('error', $session, error: $e->getMessage());
+
+            throw $e;
+        }
+
+        $trace->finish('success', $result['session'], $result['question'], $result['message']);
+
+        return $result;
     }
 
     /**
      * Streaming variant: yields a "sources" event, then ['type' => 'delta', 'content' => ...]
      * while the model is generating, then a final "done" event after saving.
+     * If the consumer stops early (client disconnected) the trace is saved as "aborted".
      *
      * @param  list<array{role: string, content: string}>  $history  oldest first
      * @return Generator<int, array<string, mixed>>
      */
-    public function streamWithHistory(ChatSession $session, string $question, array $history): Generator
+    public function streamWithHistory(ChatSession $session, string $question, array $history, string $channel = 'openwebui'): Generator
     {
-        $chunks = $this->rag->search($question);
+        $trace = AiTrace::start($channel, $session->user_id, $question);
+        $status = 'aborted';
+        $error = null;
+        $result = null;
 
-        yield ['type' => 'sources', 'sources' => array_map(fn (RagChunk $c) => $c->toArray(), $chunks)];
+        try {
+            $chunks = $this->retrieve($question, $trace);
 
-        $tokens = $this->llm->chatStream($this->prompts->build($question, $chunks, $this->trim($history)));
-        $content = '';
+            yield ['type' => 'sources', 'sources' => array_map(fn (RagChunk $c) => $c->toArray(), $chunks)];
 
-        foreach ($tokens as $delta) {
-            $content .= $delta;
-            yield ['type' => 'delta', 'content' => $delta];
+            $trace->llmStarted($this->llm->model());
+            $tokens = $this->llm->chatStream($this->prompts->build($question, $chunks, $this->trim($history)));
+            $content = '';
+
+            foreach ($tokens as $delta) {
+                $trace->firstToken();
+                $content .= $delta;
+                yield ['type' => 'delta', 'content' => $delta];
+            }
+
+            $stats = $tokens->getReturn() ?? [];
+            $trace->llmFinished($stats);
+
+            $result = $this->persist($session, $question, $content, $chunks, $stats);
+            $status = 'success';
+
+            yield [
+                'type' => 'done',
+                'session_id' => $result['session']->id,
+                'message_id' => $result['message']->id,
+                'usage' => [
+                    'prompt_tokens' => $stats['prompt_tokens'] ?? null,
+                    'completion_tokens' => $stats['completion_tokens'] ?? null,
+                ],
+            ];
+        } catch (Throwable $e) {
+            $status = 'error';
+            $error = $e->getMessage();
+
+            throw $e;
+        } finally {
+            $trace->finish($status, $result['session'] ?? $session, $result['question'] ?? null, $result['message'] ?? null, $error);
         }
-
-        $stats = $tokens->getReturn() ?? [];
-        $result = $this->persist($session, $question, $content, $chunks, $stats);
-
-        yield [
-            'type' => 'done',
-            'session_id' => $result['session']->id,
-            'message_id' => $result['message']->id,
-            'usage' => [
-                'prompt_tokens' => $stats['prompt_tokens'] ?? null,
-                'completion_tokens' => $stats['completion_tokens'] ?? null,
-            ],
-        ];
     }
 
     /**
@@ -130,6 +166,18 @@ class ChatService
     }
 
     /**
+     * @return list<RagChunk>
+     */
+    private function retrieve(string $question, AiTrace $trace): array
+    {
+        $result = $this->rag->searchWithStatus($question);
+
+        $trace->rag($result['ms'], count($result['chunks']), collect($result['chunks'])->max('score'), $result['error']);
+
+        return $result['chunks'];
+    }
+
+    /**
      * @return list<array{role: string, content: string}>
      */
     private function storedHistory(ChatSession $session): array
@@ -152,14 +200,14 @@ class ChatService
 
     /**
      * @param  list<RagChunk>  $chunks
-     * @return array{session: ChatSession, message: ChatMessage}
+     * @return array{session: ChatSession, question: ChatMessage, message: ChatMessage}
      */
     private function persist(ChatSession $session, string $question, string $answer, array $chunks, array $stats): array
     {
         return DB::transaction(function () use ($session, $question, $answer, $chunks, $stats) {
             $session->save();
 
-            $session->messages()->create([
+            $questionMessage = $session->messages()->create([
                 'role' => MessageRole::User,
                 'content' => $question,
             ]);
@@ -173,7 +221,7 @@ class ChatService
                 ],
             ]);
 
-            return ['session' => $session, 'message' => $message];
+            return ['session' => $session, 'question' => $questionMessage, 'message' => $message];
         });
     }
 }

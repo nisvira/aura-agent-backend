@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
 use App\Models\User;
 use App\Services\YruPassport\YruPassportService;
 use Illuminate\Http\JsonResponse;
@@ -20,7 +22,15 @@ class AuthController extends Controller
     {
         $request->validate(['access_token' => ['required', 'string']]);
 
-        $user = $passport->syncUser($passport->getUserInfo($request->string('access_token')->toString()));
+        try {
+            $user = $passport->syncUser($passport->getUserInfo($request->string('access_token')->toString()));
+        } catch (UpstreamServiceException $e) {
+            AuditLog::record('auth.login.failed', metadata: ['method' => 'passport_token', 'reason' => $e->getMessage()]);
+
+            throw $e;
+        }
+
+        AuditLog::record('auth.login.success', $user, metadata: ['method' => 'passport_token']);
 
         return response()->json(self::issueToken($user));
     }
@@ -32,6 +42,8 @@ class AuthController extends Controller
 
     public function logout(Request $request): Response
     {
+        AuditLog::record('auth.logout', $request->user(), metadata: ['method' => 'token']);
+
         $request->user()->currentAccessToken()->delete();
 
         return response()->noContent();
@@ -43,9 +55,12 @@ class AuthController extends Controller
     public static function issueToken(User $user): array
     {
         $expiresAt = now()->addDays(config('chat.token_ttl_days'));
+        $token = $user->createToken('yru-passport', ['*'], $expiresAt);
+
+        AuditLog::record('auth.token.issued', $user, metadata: ['token_id' => $token->accessToken->id, 'expires_at' => $expiresAt->toIso8601String()]);
 
         return [
-            'token' => $user->createToken('yru-passport', ['*'], $expiresAt)->plainTextToken,
+            'token' => $token->plainTextToken,
             'token_type' => 'Bearer',
             'expires_at' => $expiresAt->toIso8601String(),
             'user' => $user,

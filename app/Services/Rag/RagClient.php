@@ -29,6 +29,20 @@ class RagClient
      */
     public function search(string $query, ?int $topK = null): array
     {
+        return $this->searchWithStatus($query, $topK)['chunks'];
+    }
+
+    /**
+     * Same as search(), plus timing and the failure reason so callers can tell
+     * "nothing relevant found" apart from "RAG is down".
+     *
+     * @return array{chunks: list<RagChunk>, ms: int, error: string|null}
+     */
+    public function searchWithStatus(string $query, ?int $topK = null): array
+    {
+        $startedAt = hrtime(true);
+        $elapsed = fn () => intdiv(hrtime(true) - $startedAt, 1_000_000);
+
         try {
             $response = $this->http()
                 ->post($this->config['search_path'], [
@@ -41,11 +55,17 @@ class RagClient
                 'error' => $e->getMessage(),
             ]);
 
-            return [];
+            return ['chunks' => [], 'ms' => $elapsed(), 'error' => $e->getMessage()];
         }
 
-        $items = $response->json('results') ?? $response->json('data') ?? [];
+        return ['chunks' => $this->parse($response->json('results') ?? $response->json('data') ?? []), 'ms' => $elapsed(), 'error' => null];
+    }
 
+    /**
+     * @return list<RagChunk>
+     */
+    private function parse(array $items): array
+    {
         return collect($items)
             ->map(fn (array $item) => new RagChunk(
                 content: (string) ($item['content'] ?? $item['text'] ?? $item['page_content'] ?? ''),

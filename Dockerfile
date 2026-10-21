@@ -16,7 +16,8 @@ RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-in
 COPY . .
 RUN composer dump-autoload --optimize --no-dev \
     && php artisan package:discover --ansi \
-    && chown -R www-data:www-data storage bootstrap/cache /config/caddy /data/caddy
+    && mkdir -p /config/psysh \
+    && chown -R www-data:www-data storage bootstrap/cache /config/caddy /config/psysh /data/caddy
 
 USER www-data
 

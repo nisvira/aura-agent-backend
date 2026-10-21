@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Http\Requests\ChatCompletionRequest;
+use App\Models\User;
 use App\Services\Chat\ChatService;
 use App\Services\Chat\PromptBuilder;
 use App\Services\Llm\OllamaClient;
@@ -10,6 +11,7 @@ use App\Services\Rag\RagClient;
 use App\Services\YruPassport\YruPassportService;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
@@ -43,6 +45,8 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureRateLimiting();
+
+        Gate::define('admin', fn (User $user) => $user->isAdmin());
     }
 
     private function configureRateLimiting(): void
@@ -67,9 +71,9 @@ class AppServiceProvider extends ServiceProvider
 
             return [
                 Limit::perMinute(config('chat.rate_limit.per_minute'))->by('chat-min:'.$key)
-                    ->response(fn () => response()->json(['message' => 'ส่งคำถามบ่อยเกินไป กรุณารอสักครู่'], 429)),
+                    ->response(fn (Request $request, array $headers) => response()->json(['message' => 'ส่งคำถามบ่อยเกินไป กรุณารอสักครู่'], 429, $headers)),
                 Limit::perDay(config('chat.rate_limit.per_day'))->by('chat-day:'.$key)
-                    ->response(fn () => response()->json(['message' => 'ใช้งานครบโควตาของวันนี้แล้ว'], 429)),
+                    ->response(fn (Request $request, array $headers) => response()->json(['message' => 'ใช้งานครบโควตาของวันนี้แล้ว'], 429, $headers)),
             ];
         });
     }

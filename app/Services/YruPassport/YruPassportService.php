@@ -3,6 +3,7 @@
 namespace App\Services\YruPassport;
 
 use App\Exceptions\UpstreamServiceException;
+use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
@@ -111,7 +112,12 @@ class YruPassportService
             $user->email_verified_at = now();
         }
 
+        $isNew = ! $user->exists;
         $user->save();
+
+        if ($isNew) {
+            AuditLog::record('user.created', $user, $user, ['source' => 'passport']);
+        }
 
         return $user;
     }

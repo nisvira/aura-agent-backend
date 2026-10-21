@@ -1,5 +1,6 @@
 <?php
 
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -38,6 +39,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Database Log Retention
+    |--------------------------------------------------------------------------
+    |
+    | Days to keep rows in audit_logs and ai_requests; older rows are deleted
+    | by the daily `model:prune` run (see routes/console.php).
+    |
+    */
+
+    'retention' => [
+        'audit_days' => (int) env('AUDIT_LOG_DAYS', 365),
+        'ai_request_days' => (int) env('AI_LOG_DAYS', 365),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Log Channels
     |--------------------------------------------------------------------------
     |
@@ -69,8 +85,19 @@ return [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
-            'max_files' => env('LOG_DAILY_DAYS', 14),
+            'max_files' => env('LOG_DAILY_DAYS', 30),
+            'formatter' => JsonFormatter::class,
             'replace_placeholders' => true,
+        ],
+
+        // One JSON line per HTTP request (App\Http\Middleware\AssignRequestId).
+        // Thai Computer Crime Act s.26 requires keeping traffic data for at least 90 days.
+        'access' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/access.log'),
+            'level' => 'info',
+            'max_files' => env('LOG_ACCESS_DAYS', 90),
+            'formatter' => JsonFormatter::class,
         ],
 
         'monthly' => [

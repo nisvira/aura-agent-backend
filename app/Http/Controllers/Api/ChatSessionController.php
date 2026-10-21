@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ChatSessionResource;
+use App\Models\AuditLog;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
@@ -40,7 +41,11 @@ class ChatSessionController extends Controller
 
     public function destroy(Request $request, int $session): Response
     {
-        $request->user()->chatSessions()->findOrFail($session)->delete();
+        $chatSession = $request->user()->chatSessions()->findOrFail($session);
+        $messageCount = $chatSession->messages()->count();
+        $chatSession->delete();
+
+        AuditLog::record('chat.session.deleted', $request->user(), $chatSession, ['messages' => $messageCount]);
 
         return response()->noContent();
     }

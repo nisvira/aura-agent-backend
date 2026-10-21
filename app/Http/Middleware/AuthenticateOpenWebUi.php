@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\AuditLog;
 use App\Models\User;
 use Closure;
 use Illuminate\Http\JsonResponse;
@@ -34,6 +35,10 @@ class AuthenticateOpenWebUi
         }
 
         if (! $user) {
+            if ($token !== '') {
+                AuditLog::record('auth.invalid_api_key', metadata: ['path' => '/'.$request->path()]);
+            }
+
             return self::error('Invalid API key', 'invalid_api_key', 401);
         }
 
@@ -69,6 +74,10 @@ class AuthenticateOpenWebUi
             // Open WebUI URL-encodes the name so Thai characters survive the header.
             'name' => rawurldecode((string) $request->header('X-OpenWebUI-User-Name')) ?: $email,
         ]);
+
+        if ($user->wasRecentlyCreated) {
+            AuditLog::record('user.created', $user, $user, ['source' => 'openwebui']);
+        }
 
         $user->forceFill(['last_login_at' => now()])->saveQuietly();
 

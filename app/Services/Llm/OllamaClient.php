@@ -102,6 +102,7 @@ class OllamaClient
             'model' => $this->config['model'],
             'messages' => $messages,
             'stream' => $stream,
+            'think' => $this->config['think'],
             'keep_alive' => $this->config['keep_alive'],
             'options' => [
                 'temperature' => $this->config['temperature'],

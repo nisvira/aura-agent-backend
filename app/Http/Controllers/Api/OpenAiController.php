@@ -7,12 +7,14 @@ use App\Http\Controllers\Concerns\LocksChatPerUser;
 use App\Http\Controllers\Controller;
 use App\Http\Middleware\AuthenticateOpenWebUi;
 use App\Http\Requests\ChatCompletionRequest;
+use App\Services\Chat\AiTrace;
 use App\Services\Chat\ChatService;
 use App\Services\Llm\OllamaClient;
 use Generator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 /**
  * OpenAI-compatible API so Open WebUI can use Aura as a model.
@@ -51,13 +53,14 @@ class OpenAiController extends Controller
         $user = $request->user();
         $stream = $request->boolean('stream');
 
-        // Title/tag/follow-up generation: plain Ollama call, nothing saved.
+        // Title/tag/follow-up generation: plain Ollama call, no chat history saved.
         if ($request->isTask()) {
             $messages = $request->conversation();
+            $trace = AiTrace::start('openwebui', $user->id, $request->question(), isTask: true);
 
             return $stream
-                ? $this->streamResponse($this->taskEvents($messages))
-                : $this->guard(fn () => $this->completion(...$this->taskAnswer($messages)));
+                ? $this->streamResponse($this->taskEvents($messages, $trace))
+                : $this->guard(fn () => $this->completion(...$this->taskAnswer($messages, $trace)));
         }
 
         // X-OpenWebUI-Chat-Id is forwarded together with the user headers. Without it,
@@ -90,9 +93,20 @@ class OpenAiController extends Controller
     /**
      * @return array{0: string, 1: array<string, mixed>}
      */
-    private function taskAnswer(array $messages): array
+    private function taskAnswer(array $messages, AiTrace $trace): array
     {
-        $answer = $this->llm->chat($messages);
+        $trace->llmStarted($this->llm->model());
+
+        try {
+            $answer = $this->llm->chat($messages);
+        } catch (Throwable $e) {
+            $trace->finish('error', error: $e->getMessage());
+
+            throw $e;
+        }
+
+        $trace->llmFinished($answer['stats']);
+        $trace->finish('success');
 
         return [$answer['content'], $answer['stats']];
     }
@@ -100,15 +114,32 @@ class OpenAiController extends Controller
     /**
      * Wrap raw Ollama deltas in the same event shape ChatService::streamWithHistory() yields.
      */
-    private function taskEvents(array $messages): Generator
+    private function taskEvents(array $messages, AiTrace $trace): Generator
     {
-        $tokens = $this->llm->chatStream($messages);
+        $status = 'aborted';
+        $error = null;
 
-        foreach ($tokens as $delta) {
-            yield ['type' => 'delta', 'content' => $delta];
+        try {
+            $trace->llmStarted($this->llm->model());
+            $tokens = $this->llm->chatStream($messages);
+
+            foreach ($tokens as $delta) {
+                $trace->firstToken();
+                yield ['type' => 'delta', 'content' => $delta];
+            }
+
+            $trace->llmFinished($stats = $tokens->getReturn() ?? []);
+            $status = 'success';
+
+            yield ['type' => 'done', 'usage' => $stats];
+        } catch (Throwable $e) {
+            $status = 'error';
+            $error = $e->getMessage();
+
+            throw $e;
+        } finally {
+            $trace->finish($status, error: $error);
         }
-
-        yield ['type' => 'done', 'usage' => $tokens->getReturn() ?? []];
     }
 
     private function completion(string $content, array $stats): JsonResponse

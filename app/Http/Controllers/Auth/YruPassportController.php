@@ -4,15 +4,19 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Controller;
+use App\Exceptions\UpstreamServiceException;
+use App\Models\AuditLog;
 use App\Services\YruPassport\YruPassportService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Str;
 
 /**
  * Browser-based login (Authorization Code flow):
  *   GET /auth/yru/redirect → passport.yru.ac.th → GET /auth/yru/callback
- *   → redirect to the frontend with the Sanctum token in the URL fragment.
+ *   → redirect to the frontend with the Sanctum token in the URL fragment,
+ *   or, when started with ?to=console, log into the test console session.
  */
 class YruPassportController extends Controller
 {
@@ -22,6 +26,7 @@ class YruPassportController extends Controller
     {
         $state = Str::random(40);
         $request->session()->put('yru_passport_state', $state);
+        $request->session()->put('yru_passport_to', $request->query('to') === 'console' ? 'console' : 'frontend');
 
         return redirect()->away($this->passport->authorizeUrl($state));
     }
@@ -30,11 +35,35 @@ class YruPassportController extends Controller
     {
         $expected = $request->session()->pull('yru_passport_state');
 
-        abort_if(! $expected || ! hash_equals($expected, (string) $request->query('state')), 403, 'Invalid OAuth state');
-        abort_if($request->filled('error') || ! $request->filled('code'), 401, 'YRU Passport login was cancelled');
+        if (! $expected || ! hash_equals($expected, (string) $request->query('state'))) {
+            // A forged or replayed callback, or just an expired session.
+            AuditLog::record('auth.state_mismatch', metadata: ['method' => 'passport']);
+            abort(403, 'Invalid OAuth state');
+        }
 
-        $accessToken = $this->passport->exchangeCode($request->query('code'));
-        $user = $this->passport->syncUser($this->passport->getUserInfo($accessToken));
+        if ($request->filled('error') || ! $request->filled('code')) {
+            AuditLog::record('auth.login.failed', metadata: ['method' => 'passport', 'reason' => (string) $request->query('error', 'no_code')]);
+            abort(401, 'YRU Passport login was cancelled');
+        }
+
+        try {
+            $accessToken = $this->passport->exchangeCode($request->query('code'));
+            $user = $this->passport->syncUser($this->passport->getUserInfo($accessToken));
+        } catch (UpstreamServiceException $e) {
+            AuditLog::record('auth.login.failed', metadata: ['method' => 'passport', 'reason' => $e->getMessage()]);
+
+            throw $e;
+        }
+
+        $to = $request->session()->pull('yru_passport_to');
+        AuditLog::record('auth.login.success', $user, metadata: ['method' => 'passport', 'to' => $to]);
+
+        if ($to === 'console') {
+            Auth::login($user);
+            $request->session()->regenerate();
+
+            return redirect()->intended(route('console'));
+        }
 
         $auth = AuthController::issueToken($user);
 

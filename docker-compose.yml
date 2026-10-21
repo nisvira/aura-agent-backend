@@ -14,5 +14,20 @@ services:
       - ./.env:/app/.env:ro
       - storage:/app/storage
 
+  # Runs scheduled jobs (daily model:prune of old audit/AI log rows).
+  scheduler:
+    image: aura-agent-backend:latest
+    container_name: aura-agent-scheduler
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - app
+    command: ["php", "artisan", "schedule:work"]
+    healthcheck:
+      disable: true
+    volumes:
+      - ./.env:/app/.env:ro
+      - storage:/app/storage
+
 volumes:
   storage:

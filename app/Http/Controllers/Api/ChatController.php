@@ -26,7 +26,12 @@ class ChatController extends Controller
         $lock = $this->acquireUserLock($request->user()->id);
 
         try {
-            $result = $this->chat->reply($request->user(), $request->string('message')->toString(), $request->sessionId());
+            $result = $this->chat->reply(
+                $request->user(),
+                $request->string('message')->toString(),
+                $request->sessionId(),
+                $this->isConsole($request) ? 'console' : 'api',
+            );
         } finally {
             $lock->release();
         }
@@ -47,6 +52,7 @@ class ChatController extends Controller
         $user = $request->user();
         $question = $request->string('message')->toString();
         $sessionId = $request->sessionId();
+        $channel = $this->isConsole($request) ? 'console' : 'api_stream';
 
         // Check ownership now: once the stream starts, headers are sent and a 404 is no longer possible.
         if ($sessionId !== null) {
@@ -55,12 +61,12 @@ class ChatController extends Controller
 
         $lock = $this->acquireUserLock($user->id);
 
-        return response()->eventStream(function () use ($lock, $user, $question, $sessionId) {
+        return response()->eventStream(function () use ($lock, $user, $question, $sessionId, $channel) {
             // Keep running after a client disconnect so the loop can stop cleanly and release the lock.
             ignore_user_abort(true);
 
             try {
-                foreach ($this->chat->stream($user, $question, $sessionId) as $event) {
+                foreach ($this->chat->stream($user, $question, $sessionId, $channel) as $event) {
                     yield new StreamedEvent(event: $event['type'], data: $event);
                 }
             } catch (UpstreamServiceException $e) {
@@ -69,5 +75,14 @@ class ChatController extends Controller
                 $lock->release();
             }
         }, headers: ['X-Accel-Buffering' => 'no']);
+    }
+
+    /**
+     * Requests from the admin test console are authenticated by session cookie
+     * (Sanctum marks them); everything else comes with a Bearer token.
+     */
+    private function isConsole(SendChatMessageRequest $request): bool
+    {
+        return (bool) $request->attributes->get('sanctum');
     }
 }

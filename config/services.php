@@ -62,6 +62,8 @@ return [
         'temperature' => (float) env('OLLAMA_TEMPERATURE', 0.3),
         'num_ctx' => (int) env('OLLAMA_NUM_CTX', 8192),
         'keep_alive' => env('OLLAMA_KEEP_ALIVE', '10m'),
+        // Reasoning models (qwen3, deepseek-r1...) think before answering; off = much faster replies.
+        'think' => (bool) env('OLLAMA_THINK', false),
         'timeout' => (int) env('OLLAMA_TIMEOUT', 180),
     ],
 

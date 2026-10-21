@@ -25,6 +25,15 @@ class User extends Authenticatable
     }
 
     /**
+     * Admins can use the test console. Set per user (app:create-admin) or by
+     * email in ADMIN_EMAILS, which also covers YRU Passport accounts.
+     */
+    public function isAdmin(): bool
+    {
+        return $this->is_admin || ($this->email && in_array(strtolower($this->email), config('auth.admin_emails'), true));
+    }
+
+    /**
      * Get the attributes that should be cast.
      *
      * @return array<string, string>
@@ -34,6 +43,7 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'last_login_at' => 'datetime',
+            'is_admin' => 'boolean',
             'password' => 'hashed',
             'passport_profile' => 'array',
         ];
