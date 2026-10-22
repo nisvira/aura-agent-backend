@@ -15,13 +15,10 @@ return [
 
     'api_key' => env('OPENWEBUI_API_KEY'),
 
-    // Model shown in Open WebUI's model picker. The real Ollama model is services.ollama.model.
-    'model_id' => env('OPENWEBUI_MODEL_ID', 'aura-rag'),
+    // Model shown in Open WebUI's model picker; its answers come from AURA-AGENT.
+    'model_id' => env('OPENWEBUI_MODEL_ID', 'aura-agent'),
 
     // Comma-separated; Open WebUI users with other email domains are rejected. Empty = allow all.
     'allowed_email_domains' => array_filter(array_map('trim', explode(',', (string) env('OPENWEBUI_ALLOWED_EMAIL_DOMAINS', 'yru.ac.th')))),
-
-    // Append a "แหล่งอ้างอิง" list of RAG sources to answers shown in Open WebUI.
-    'append_sources' => (bool) env('OPENWEBUI_APPEND_SOURCES', true),
 
 ];

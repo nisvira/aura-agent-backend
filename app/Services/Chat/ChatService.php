@@ -3,138 +3,94 @@
 namespace App\Services\Chat;
 
 use App\Enums\MessageRole;
+use App\Exceptions\UpstreamServiceException;
 use App\Models\ChatMessage;
 use App\Models\ChatSession;
 use App\Models\User;
-use App\Services\Llm\OllamaClient;
-use App\Services\Rag\RagChunk;
-use App\Services\Rag\RagClient;
+use App\Services\Agent\ActAs;
+use App\Services\Agent\AuraAgentClient;
+use App\Services\YruPassport\YruPassportService;
 use Generator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Throwable;
 
 /**
- * Chat pipeline: question → RAG search → prompt → Ollama → save both messages.
+ * Chat pipeline: every answer comes from AURA-AGENT, which reads the
+ * student's real data from the Activity API and keeps its own memory of
+ * each conversation (thread_id). Laravel authenticates the student, passes
+ * on their YRU Passport token, streams the answer through and keeps a copy
+ * of the conversation for the history screens.
  *
- * Messages are only written after the LLM answers, so a failed call never
- * leaves a dangling user message (or an empty new session) behind. Every
- * question, successful or not, leaves one ai_requests row (AiTrace).
+ * Messages are only written after an answer is complete, and every question
+ * leaves one ai_requests row (AiTrace).
  */
 class ChatService
 {
+    public const PASSPORT_REQUIRED = 'กรุณาเข้าสู่ระบบด้วย YRU Passport ก่อนใช้งาน AURA';
+
+    public const SUPPORT_UNAVAILABLE = 'ยังถามแทนนักศึกษาไม่ได้ ต้องรอให้ AURA-AGENT เปิดโหมดถามแทน (AURA_AGENT_SUPPORT_KEY)';
+
     public function __construct(
-        private readonly RagClient $rag,
-        private readonly OllamaClient $llm,
-        private readonly PromptBuilder $prompts,
-        private readonly int $historyLimit,
+        private readonly AuraAgentClient $agent,
+        private readonly YruPassportService $passport,
     ) {}
 
     /**
-     * Answer using the history stored in our database (our own frontend).
+     * Wait for the whole answer. With $actAs (already authorised by the
+     * "view-student" gate) an admin or instructor asks about that student.
      *
      * @return array{session: ChatSession, question: ChatMessage, message: ChatMessage}
      */
-    public function reply(User $user, string $question, ?int $sessionId = null, string $channel = 'api'): array
+    public function reply(User $user, string $question, ?int $sessionId = null, string $channel = 'api', ?ActAs $actAs = null): array
     {
-        $session = $this->resolveSession($user, $sessionId, $question);
+        $session = $this->resolveSession($user, $sessionId, $question, $actAs);
 
-        return $this->replyWithHistory($session, $question, $this->storedHistory($session), $channel);
+        return $this->drain($this->run($session, $question, $channel, $actAs));
     }
 
     /**
      * @return Generator<int, array<string, mixed>>
      */
-    public function stream(User $user, string $question, ?int $sessionId = null, string $channel = 'api_stream'): Generator
+    public function stream(User $user, string $question, ?int $sessionId = null, string $channel = 'api_stream', ?ActAs $actAs = null): Generator
     {
-        $session = $this->resolveSession($user, $sessionId, $question);
+        $session = $this->resolveSession($user, $sessionId, $question, $actAs);
 
-        yield from $this->streamWithHistory($session, $question, $this->storedHistory($session), $channel);
+        yield from $this->run($session, $question, $channel, $actAs);
     }
 
     /**
-     * Answer using a history supplied by the caller (Open WebUI sends the whole
-     * conversation on every request). The new turn is still saved to $session.
-     *
-     * @param  list<array{role: string, content: string}>  $history  oldest first
      * @return array{session: ChatSession, question: ChatMessage, message: ChatMessage}
      */
-    public function replyWithHistory(ChatSession $session, string $question, array $history, string $channel = 'openwebui'): array
+    public function replyInSession(ChatSession $session, string $question, string $channel = 'openwebui'): array
     {
-        $trace = AiTrace::start($channel, $session->user_id, $question);
-
-        try {
-            $chunks = $this->retrieve($question, $trace);
-
-            $trace->llmStarted($this->llm->model());
-            $answer = $this->llm->chat($this->prompts->build($question, $chunks, $this->trim($history)));
-            $trace->llmFinished($answer['stats']);
-
-            $result = $this->persist($session, $question, $answer['content'], $chunks, $answer['stats']);
-        } catch (Throwable $e) {
-            $trace->finish('error', $session, error: $e->getMessage());
-
-            throw $e;
-        }
-
-        $trace->finish('success', $result['session'], $result['question'], $result['message']);
-
-        return $result;
+        return $this->drain($this->run($session, $question, $channel));
     }
 
     /**
-     * Streaming variant: yields a "sources" event, then ['type' => 'delta', 'content' => ...]
-     * while the model is generating, then a final "done" event after saving.
+     * Wait for a run to finish; the events only matter when streaming.
+     */
+    private function drain(Generator $run): array
+    {
+        foreach ($run as $event) {
+            // discard
+        }
+
+        return $run->getReturn();
+    }
+
+    /**
+     * Stream the answer: "status" while the agent looks something up, "delta"
+     * chunks of text, then "done" once saved. Problems are thrown as
+     * UpstreamServiceException (errorCode: PASSPORT_REQUIRED, NOT_STUDENT,
+     * TOKEN_EXPIRED, UPSTREAM_UNAVAILABLE, LLM_UNAVAILABLE, ...).
      * If the consumer stops early (client disconnected) the trace is saved as "aborted".
      *
-     * @param  list<array{role: string, content: string}>  $history  oldest first
      * @return Generator<int, array<string, mixed>>
      */
-    public function streamWithHistory(ChatSession $session, string $question, array $history, string $channel = 'openwebui'): Generator
+    public function streamInSession(ChatSession $session, string $question, string $channel = 'openwebui'): Generator
     {
-        $trace = AiTrace::start($channel, $session->user_id, $question);
-        $status = 'aborted';
-        $error = null;
-        $result = null;
-
-        try {
-            $chunks = $this->retrieve($question, $trace);
-
-            yield ['type' => 'sources', 'sources' => array_map(fn (RagChunk $c) => $c->toArray(), $chunks)];
-
-            $trace->llmStarted($this->llm->model());
-            $tokens = $this->llm->chatStream($this->prompts->build($question, $chunks, $this->trim($history)));
-            $content = '';
-
-            foreach ($tokens as $delta) {
-                $trace->firstToken();
-                $content .= $delta;
-                yield ['type' => 'delta', 'content' => $delta];
-            }
-
-            $stats = $tokens->getReturn() ?? [];
-            $trace->llmFinished($stats);
-
-            $result = $this->persist($session, $question, $content, $chunks, $stats);
-            $status = 'success';
-
-            yield [
-                'type' => 'done',
-                'session_id' => $result['session']->id,
-                'message_id' => $result['message']->id,
-                'usage' => [
-                    'prompt_tokens' => $stats['prompt_tokens'] ?? null,
-                    'completion_tokens' => $stats['completion_tokens'] ?? null,
-                ],
-            ];
-        } catch (Throwable $e) {
-            $status = 'error';
-            $error = $e->getMessage();
-
-            throw $e;
-        } finally {
-            $trace->finish($status, $result['session'] ?? $session, $result['question'] ?? null, $result['message'] ?? null, $error);
-        }
+        yield from $this->run($session, $question, $channel);
     }
 
     /**
@@ -150,61 +106,146 @@ class ChatService
     }
 
     /**
-     * Load the user's existing session (404 if it belongs to someone else) or
-     * prepare an unsaved new one titled after the first question.
+     * @return Generator<int, array<string, mixed>, mixed, array{session: ChatSession, question: ChatMessage, message: ChatMessage}>
      */
-    private function resolveSession(User $user, ?int $sessionId, string $question): ChatSession
+    private function run(ChatSession $session, string $question, string $channel, ?ActAs $actAs = null): Generator
     {
-        if ($sessionId !== null) {
-            return $user->chatSessions()->findOrFail($sessionId);
+        $trace = AiTrace::start($channel, $session->user_id, $question, engine: 'aura_agent');
+        $trace->actingAs($actAs?->studentCode);
+        $session->agent_thread_id ??= (string) Str::uuid();
+        $status = 'aborted';
+        $error = null;
+        $result = null;
+
+        try {
+            $token = $actAs ? $this->assertSupportMode() : $this->passportToken($session->user);
+
+            $trace->llmStarted('aura-agent');
+            $content = '';
+
+            foreach ($this->agent->chat($token, $session->agent_thread_id, $question, $actAs) as $event) {
+                $data = $event['data'];
+
+                switch ($event['event']) {
+                    case 'status':
+                        yield ['type' => 'status', 'text' => (string) ($data['text'] ?? '')];
+                        break;
+
+                    case 'token':
+                        $trace->firstToken();
+                        $content .= $text = (string) ($data['text'] ?? '');
+                        yield ['type' => 'delta', 'content' => $text];
+                        break;
+
+                    case 'error':
+                        $code = (string) ($data['code'] ?? 'INTERNAL');
+
+                        if ($code === 'TOKEN_EXPIRED') {
+                            $this->passport->forgetTokens($session->user);
+                        }
+
+                        throw new UpstreamServiceException(
+                            'aura_agent',
+                            (string) ($data['text'] ?? AuraAgentClient::UNAVAILABLE),
+                            match ($code) {
+                                'TOKEN_EXPIRED' => 401,
+                                'NOT_STUDENT' => 403,
+                                default => 503,
+                            },
+                            errorCode: $code,
+                        );
+
+                    case 'done':
+                        $stats = ['tools_used' => $data['tools_used'] ?? [], 'latency_ms' => $data['latency_ms'] ?? null];
+                        $trace->llmFinished($stats);
+
+                        $result = $this->persist($session, $question, $content, $stats);
+                        $status = 'success';
+
+                        yield [
+                            'type' => 'done',
+                            'session_id' => $result['session']->id,
+                            'message_id' => $result['message']->id,
+                            'acting_as' => $actAs?->studentCode,
+                            ...$stats,
+                        ];
+
+                        return $result;
+                }
+            }
+
+            throw new UpstreamServiceException('aura_agent', AuraAgentClient::UNAVAILABLE, 503, errorCode: 'INCOMPLETE');
+        } catch (Throwable $e) {
+            $status = 'error';
+            $error = $e instanceof UpstreamServiceException && $e->errorCode ? "{$e->errorCode}: {$e->getMessage()}" : $e->getMessage();
+
+            throw $e;
+        } finally {
+            $trace->finish($status, $result['session'] ?? $session, $result['question'] ?? null, $result['message'] ?? null, $error);
+        }
+    }
+
+    /**
+     * Support mode needs no Passport token (the agent looks the student up by code).
+     */
+    private function assertSupportMode(): null
+    {
+        if (! $this->agent->supportEnabled()) {
+            throw new UpstreamServiceException('aura_agent', self::SUPPORT_UNAVAILABLE, 503, errorCode: 'SUPPORT_UNAVAILABLE');
         }
 
-        $session = new ChatSession(['title' => Str::limit(Str::squish($question), 60)]);
+        return null;
+    }
+
+    /**
+     * The user's YRU Passport access token. Students and staff both go to the
+     * agent (since AURA-AGENT 670a21a staff can search activity rounds and are
+     * told personal progress is for students only), so no role filter here.
+     */
+    private function passportToken(User $user): string
+    {
+        if (! $this->agent->enabled()) {
+            throw new UpstreamServiceException('aura_agent', AuraAgentClient::UNAVAILABLE, 503, errorCode: 'AGENT_UNAVAILABLE');
+        }
+
+        return $this->passport->accessTokenFor($user)
+            ?? throw new UpstreamServiceException('aura_agent', self::PASSPORT_REQUIRED, 401, errorCode: 'PASSPORT_REQUIRED');
+    }
+
+    /**
+     * Load the user's existing session (404 if it belongs to someone else) or
+     * prepare an unsaved new one titled after the first question. A session is
+     * tied to one subject: the user themself, or the one student asked about.
+     */
+    private function resolveSession(User $user, ?int $sessionId, string $question, ?ActAs $actAs = null): ChatSession
+    {
+        if ($sessionId !== null) {
+            $session = $user->chatSessions()->findOrFail($sessionId);
+
+            abort_unless(
+                $session->acting_as_student === $actAs?->studentCode,
+                422,
+                'ห้องแชทนี้เป็นของนักศึกษาคนอื่น กรุณาเริ่มแชทใหม่',
+            );
+
+            return $session;
+        }
+
+        $session = new ChatSession([
+            'title' => Str::limit(($actAs ? "[{$actAs->studentCode}] " : '').Str::squish($question), 60),
+            'acting_as_student' => $actAs?->studentCode,
+        ]);
         $session->user()->associate($user);
 
         return $session;
     }
 
     /**
-     * @return list<RagChunk>
-     */
-    private function retrieve(string $question, AiTrace $trace): array
-    {
-        $result = $this->rag->searchWithStatus($question);
-
-        $trace->rag($result['ms'], count($result['chunks']), collect($result['chunks'])->max('score'), $result['error']);
-
-        return $result['chunks'];
-    }
-
-    /**
-     * @return list<array{role: string, content: string}>
-     */
-    private function storedHistory(ChatSession $session): array
-    {
-        if (! $session->exists) {
-            return [];
-        }
-
-        return $session->messages()->latest('id')->limit($this->historyLimit)->get()
-            ->reverse()
-            ->map(fn (ChatMessage $m) => ['role' => $m->role->value, 'content' => $m->content])
-            ->values()
-            ->all();
-    }
-
-    private function trim(array $history): array
-    {
-        return array_slice($history, -$this->historyLimit);
-    }
-
-    /**
-     * @param  list<RagChunk>  $chunks
      * @return array{session: ChatSession, question: ChatMessage, message: ChatMessage}
      */
-    private function persist(ChatSession $session, string $question, string $answer, array $chunks, array $stats): array
+    private function persist(ChatSession $session, string $question, string $answer, array $stats): array
     {
-        return DB::transaction(function () use ($session, $question, $answer, $chunks, $stats) {
+        return DB::transaction(function () use ($session, $question, $answer, $stats) {
             $session->save();
 
             $questionMessage = $session->messages()->create([
@@ -215,10 +256,7 @@ class ChatService
             $message = $session->messages()->create([
                 'role' => MessageRole::Assistant,
                 'content' => $answer,
-                'metadata' => [
-                    'sources' => array_map(fn (RagChunk $c) => $c->toArray(), $chunks),
-                    ...$stats,
-                ],
+                'metadata' => ['engine' => 'aura_agent', ...$stats],
             ]);
 
             return ['session' => $session, 'question' => $questionMessage, 'message' => $message];

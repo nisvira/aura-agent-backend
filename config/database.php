@@ -59,6 +59,10 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
+            // Session time zone = app timezone (Asia/Bangkok). Every date column is a
+            // TIMESTAMP, which MySQL stores as UTC and converts per session, so rows
+            // written before the switch (session was UTC) still read back correctly.
+            'timezone' => env('DB_TIMEZONE', '+07:00'),
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 Mysql::ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
             ]) : [],

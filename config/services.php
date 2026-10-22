@@ -44,18 +44,24 @@ return [
         'authorize_path' => env('YRU_PASSPORT_AUTHORIZE_PATH', '/oauth/authorize'),
         'token_path' => env('YRU_PASSPORT_TOKEN_PATH', '/oauth/token'),
         'profile_path' => env('YRU_PASSPORT_PROFILE_PATH', '/oidc/userinfo'),
+        // Passport has no OIDC end_session/revocation endpoint; this is its own web logout
+        // page. It does not redirect back, so the user ends on the Passport login page.
+        'logout_url' => env('YRU_PASSPORT_LOGOUT_URL', 'https://passport.yru.ac.th/auth/logout'),
         'timeout' => (int) env('YRU_PASSPORT_TIMEOUT', 10),
     ],
 
-    'rag' => [
-        'base_url' => env('RAG_API_URL', 'http://127.0.0.1:8001'),
-        'search_path' => env('RAG_SEARCH_PATH', '/api/rag/search'),
-        'api_key' => env('RAG_API_KEY'),
-        'top_k' => (int) env('RAG_TOP_K', 5),
-        'min_score' => (float) env('RAG_MIN_SCORE', 0),
-        'timeout' => (int) env('RAG_TIMEOUT', 15),
+    // AURA-AGENT: answers students' activity questions (does its own retrieval + LLM).
+    // Disabled until both the URL and the service key are set.
+    'aura_agent' => [
+        'base_url' => env('AURA_AGENT_URL'),
+        'service_key' => env('AURA_AGENT_SERVICE_KEY'),
+        // Second key for asking on behalf of a student (admins / instructors). Empty until
+        // AURA-AGENT implements the support mode proposal; acting as a student is off until then.
+        'support_key' => env('AURA_AGENT_SUPPORT_KEY'),
+        'timeout' => (int) env('AURA_AGENT_TIMEOUT', 180),
     ],
 
+    // Only used for Open WebUI background jobs (chat titles, tags); answers come from AURA-AGENT.
     'ollama' => [
         'base_url' => env('OLLAMA_URL', 'http://127.0.0.1:11434'),
         'model' => env('OLLAMA_MODEL', 'llama3.1:8b'),

@@ -31,14 +31,29 @@ class YruPassportController extends Controller
         return redirect()->away($this->passport->authorizeUrl($state));
     }
 
+    /**
+     * The login page on the same host as the registered Passport callback;
+     * only there does the session cookie survive the round trip.
+     */
+    public static function loginUrl(): string
+    {
+        $callback = parse_url((string) config('services.yru_passport.redirect_uri'));
+
+        return ($callback['scheme'] ?? 'http').'://'.($callback['host'] ?? '127.0.0.1')
+            .(isset($callback['port']) ? ':'.$callback['port'] : '').'/login';
+    }
+
     public function callback(Request $request): RedirectResponse
     {
         $expected = $request->session()->pull('yru_passport_state');
 
         if (! $expected || ! hash_equals($expected, (string) $request->query('state'))) {
-            // A forged or replayed callback, or just an expired session.
+            // Usually not an attack: login was started on another address than the
+            // registered callback (e.g. 10.20.41.54:8000 vs 127.0.0.1), so this
+            // browser has no session cookie here. Send them back with directions.
             AuditLog::record('auth.state_mismatch', metadata: ['method' => 'passport']);
-            abort(403, 'Invalid OAuth state');
+
+            return redirect()->route('login')->with('status', 'เข้าสู่ระบบไม่สำเร็จ กรุณาเริ่มใหม่จาก '.self::loginUrl().' แล้วกด "เข้าสู่ระบบด้วย YRU Passport" อีกครั้ง');
         }
 
         if ($request->filled('error') || ! $request->filled('code')) {
@@ -47,8 +62,9 @@ class YruPassportController extends Controller
         }
 
         try {
-            $accessToken = $this->passport->exchangeCode($request->query('code'));
-            $user = $this->passport->syncUser($this->passport->getUserInfo($accessToken));
+            $tokens = $this->passport->exchangeCode($request->query('code'));
+            $user = $this->passport->syncUser($this->passport->getUserInfo($tokens['access_token']));
+            $this->passport->storeTokens($user, $tokens);
         } catch (UpstreamServiceException $e) {
             AuditLog::record('auth.login.failed', metadata: ['method' => 'passport', 'reason' => $e->getMessage()]);
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Services\YruPassport\YruPassportService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -46,11 +47,31 @@ class LoginController extends Controller
     {
         AuditLog::record('auth.logout', $request->user(), metadata: ['method' => 'session']);
 
+        $this->endSession($request);
+
+        return redirect()->route('login');
+    }
+
+    /**
+     * Log out here and from YRU Passport: forget the Passport tokens kept for
+     * AURA-AGENT, then send the browser to Passport's logout page so the next
+     * "login with YRU Passport" asks for a password again (shared computers).
+     */
+    public function logoutPassport(Request $request, YruPassportService $passport): RedirectResponse
+    {
+        AuditLog::record('auth.logout', $request->user(), metadata: ['method' => 'session', 'passport' => true]);
+
+        $passport->forgetTokens($request->user());
+        $this->endSession($request);
+
+        return redirect()->away(config('services.yru_passport.logout_url'));
+    }
+
+    private function endSession(Request $request): void
+    {
         Auth::guard('web')->logout();
 
         $request->session()->invalidate();
         $request->session()->regenerateToken();
-
-        return redirect()->route('login');
     }
 }

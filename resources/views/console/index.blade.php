@@ -26,12 +26,20 @@
     .section-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; margin: 8px 4px 2px; }
 
     /* Chat */
-    .chat { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+    .chat { display: grid; grid-template-rows: 1fr auto auto; min-height: 0; }
+    .actas { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 16px 0; font-size: 13px; }
+    .actas label { font-weight: 600; color: var(--muted); }
+    .actas .input { flex: 1; min-width: 170px; padding: 7px 10px; font-size: 13.5px; }
+    .actas.active .input#act-student { border-color: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent); }
+    .actas-note { flex-basis: 100%; color: var(--muted); font-size: 12.5px; }
+    .actas-note:empty { display: none; }
     .messages { overflow-y: auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 14px; }
     .msg { max-width: min(760px, 92%); padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
     .msg.user { align-self: flex-end; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }
     .msg.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
     .msg.error { border-color: color-mix(in srgb, var(--bad) 50%, transparent); color: var(--bad); }
+    .msg-status { font-size: 13px; color: var(--muted); font-style: italic; }
+    .msg-status:empty { display: none; }
     .msg-sources { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 12.5px; color: var(--muted); white-space: normal; }
     .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--accent); }
     @keyframes blink { 50% { opacity: 0; } }
@@ -67,6 +75,13 @@
 @endpush
 
 @section('content')
+@php
+    $role = auth()->user()->effectiveRole();
+    $isAdmin = $role === \App\Enums\UserRole::Admin;
+    // Instructors ask about their advisees in their own name (AURA-AGENT checks the advisee list).
+    $canActAs = $isAdmin;
+    $isInstructor = $role === \App\Enums\UserRole::Instructor;
+@endphp
 <div class="app">
     @include('console._topbar', ['active' => 'chat'])
 
@@ -79,6 +94,17 @@
 
         <main class="chat">
             <div class="messages" id="messages"></div>
+            @if ($canActAs)
+                <div class="actas" id="actas">
+                    <label for="act-student">ถามแทนนักศึกษา</label>
+                    <input class="input" id="act-student" inputmode="numeric" maxlength="9" autocomplete="off"
+                           placeholder="รหัสนักศึกษา 9 หลัก (ว่าง = ถามในนามตัวเอง)">
+                    <input class="input" id="act-reason" maxlength="200" placeholder="เหตุผล (จำเป็น) เช่น ทดสอบระบบ">
+                    <div class="actas-note" id="actas-note">
+                        แอดมินถามแทนนักศึกษาได้ทุกคน ทุกครั้งถูกบันทึกใน audit log (ใช้ได้เมื่อ AURA-AGENT เปิดโหมดถามแทน)
+                    </div>
+                </div>
+            @endif
             <form class="composer" id="composer">
                 <textarea class="input" id="input" rows="1" placeholder="พิมพ์คำถาม… (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)" maxlength="{{ config('chat.max_message_length') }}"></textarea>
                 <button class="btn btn-primary" id="send" type="submit">ส่ง</button>
@@ -86,25 +112,27 @@
         </main>
 
         <aside class="panel inspector">
-            <section class="card">
-                <div class="card-head">
-                    <h3>สถานะระบบ</h3>
-                    <button class="btn btn-sm" id="refresh-status" type="button">ตรวจสอบ</button>
-                </div>
-                <div id="status" class="muted" style="font-size:13px;">กำลังตรวจสอบ…</div>
-            </section>
+            @if ($isAdmin)
+                <section class="card">
+                    <div class="card-head">
+                        <h3>สถานะระบบ</h3>
+                        <button class="btn btn-sm" id="refresh-status" type="button">ตรวจสอบ</button>
+                    </div>
+                    <div id="status" class="muted" style="font-size:13px;">กำลังตรวจสอบ…</div>
+                </section>
+            @endif
 
             <section class="card">
                 <div class="card-head"><h3>คำตอบล่าสุด</h3></div>
                 <div class="stats">
                     <div class="stat"><div class="stat-label">เวลาถึงคำแรก</div><div class="stat-value" id="s-ttft">–</div></div>
                     <div class="stat"><div class="stat-label">เวลาทั้งหมด</div><div class="stat-value" id="s-total">–</div></div>
-                    <div class="stat"><div class="stat-label">Prompt tokens</div><div class="stat-value" id="s-prompt">–</div></div>
-                    <div class="stat"><div class="stat-label">Output tokens</div><div class="stat-value" id="s-output">–</div></div>
+                    <div class="stat"><div class="stat-label">เวลาฝั่ง agent</div><div class="stat-value" id="s-agent">–</div></div>
+                    <div class="stat"><div class="stat-label">จำนวน tool</div><div class="stat-value" id="s-tool-count">–</div></div>
                 </div>
                 <div>
-                    <div class="stat-label" style="margin-bottom:4px;">ข้อมูลอ้างอิงจาก RAG</div>
-                    <div id="s-sources" class="muted" style="font-size:12.5px;">–</div>
+                    <div class="stat-label" style="margin-bottom:4px;">Tools ที่ AURA-AGENT ใช้</div>
+                    <div id="s-tools" class="muted" style="font-size:12.5px;">–</div>
                 </div>
             </section>
         </aside>
@@ -126,6 +154,10 @@
 
     let currentSession = null;
     let busy = false;
+    const isAdmin = @json($isAdmin);
+    const canActAs = @json($canActAs);
+    const isInstructor = @json($isInstructor);
+    const actStudent = () => canActAs ? $('act-student').value.trim() : '';
 
     const api = (path, options = {}) => fetch(path, {
         credentials: 'same-origin',
@@ -175,9 +207,10 @@
         if (!res.ok) return;
         const { data } = await res.json();
         currentSession = data.id;
+        if (canActAs) { $('act-student').value = data.acting_as_student ?? ''; markActAs(); }
         const box = $('messages');
         box.replaceChildren();
-        for (const m of data.messages) addMessage(m.role, m.content, m.sources);
+        for (const m of data.messages) addMessage(m.role, m.content, m.tools_used);
         box.scrollTop = box.scrollHeight;
         loadSessions();
     }
@@ -193,9 +226,11 @@
     function renderEmpty() {
         const wrap = el('div', 'empty');
         wrap.append(el('h2', null, 'ทดสอบการถามตอบ'));
-        wrap.append(el('p', 'muted', 'คำถามจะผ่านขั้นตอนจริงทั้งหมด: ค้นหาข้อมูลจาก RAG → สร้าง prompt → Ollama และบันทึกลงประวัติ'));
+        wrap.append(el('p', 'muted', 'คำถามส่งไปที่ AURA-AGENT จริง ต้อง login ด้วย YRU Passport: นักศึกษาดูความคืบหน้าของตัวเองได้ อาจารย์และบุคลากรค้นหารอบกิจกรรมที่เปิดรับสมัครได้'));
         const chips = el('div', 'chips');
-        for (const q of ['มหาวิทยาลัยราชภัฏยะลาเปิดสอนคณะอะไรบ้าง', 'ค่าธรรมเนียมการศึกษาปริญญาตรีเท่าไร', 'สมัครเรียนได้อย่างไร']) {
+        for (const q of (isInstructor
+            ? ['นักศึกษาในที่ปรึกษามีใครบ้าง', 'ใครยังทำกิจกรรมไม่ครบ', 'มีกิจกรรมอะไรเปิดรับสมัครบ้าง']
+            : ['ผมยังขาดกิจกรรมหมวดไหน', 'มีกิจกรรมอะไรกำลังจะเปิด', 'แนะนำกิจกรรมให้ครบหน่อย'])) {
             const chip = el('button', 'chip', q);
             chip.type = 'button';
             chip.onclick = () => { $('input').value = q; send(); };
@@ -205,43 +240,41 @@
         $('messages').replaceChildren(wrap);
     }
 
-    function addMessage(role, content, sources) {
+    function addMessage(role, content, tools) {
         const box = $('messages');
         box.querySelector('.empty')?.remove();
         const msg = el('div', `msg ${role}`);
         const text = el('div', null, content);
         msg.append(text);
-        if (sources) renderSourcesInline(msg, sources);
+        if (tools) renderToolsInline(msg, tools);
         box.append(msg);
         box.scrollTop = box.scrollHeight;
         return { msg, text };
     }
 
-    function renderSourcesInline(msg, sources) {
-        const named = sources.map((s, i) => s.source ? `[${i + 1}] ${s.source}` : null).filter(Boolean);
-        if (!named.length) return;
-        msg.append(el('div', 'msg-sources', 'แหล่งอ้างอิง: ' + named.join(' · ')));
+    function renderToolsInline(msg, tools) {
+        if (!tools?.length) return;
+        msg.append(el('div', 'msg-sources', 'ข้อมูลที่ใช้: ' + tools.join(' · ')));
     }
 
-    function renderSourcesPanel(sources) {
-        const box = $('s-sources');
-        if (!sources.length) { box.replaceChildren(el('span', 'muted', 'ไม่มีข้อมูลอ้างอิง (RAG ไม่ส่งผลลัพธ์หรือติดต่อไม่ได้)')); return; }
+    function renderToolsPanel(tools) {
+        const box = $('s-tools');
+        if (!tools.length) { box.replaceChildren(el('span', 'muted', 'ไม่ได้เรียก tool (ตอบจากบทสนทนา)')); return; }
         const table = el('table', 'src-table');
-        sources.forEach((s, i) => {
+        for (const name of tools) {
             const tr = el('tr');
-            tr.append(el('td', null, `[${i + 1}] ${s.source ?? '(ไม่ระบุแหล่ง)'}`));
-            tr.append(el('td', null, s.score == null ? '–' : Number(s.score).toFixed(3)));
+            tr.append(el('td', 'meta', name));
             table.append(tr);
-        });
+        }
         box.replaceChildren(table);
     }
 
     const fmtSec = (ms) => ms == null ? '–' : (ms / 1000).toFixed(1) + ' วิ';
-    function setStats({ ttft, total, prompt, output }) {
+    function setStats({ ttft, total, agent, tools }) {
         $('s-ttft').textContent = fmtSec(ttft);
         $('s-total').textContent = fmtSec(total);
-        $('s-prompt').textContent = prompt ?? '–';
-        $('s-output').textContent = output ?? '–';
+        $('s-agent').textContent = fmtSec(agent);
+        $('s-tool-count').textContent = tools ?? '–';
     }
 
     // ---------- Send (Server-Sent Events over fetch) ----------
@@ -249,6 +282,14 @@
         const input = $('input');
         const question = input.value.trim();
         if (!question || busy) return;
+
+        const payload = { message: question, session_id: currentSession };
+        if (actStudent()) {
+            if (!/^\d{9}$/.test(actStudent())) { alert('รหัสนักศึกษาต้องเป็นตัวเลข 9 หลัก'); return; }
+            if (!$('act-reason').value.trim()) { alert('กรุณาระบุเหตุผลที่ถามแทนนักศึกษา'); $('act-reason').focus(); return; }
+            payload.act_as_student = actStudent();
+            payload.reason = $('act-reason').value.trim();
+        }
 
         busy = true;
         $('send').disabled = true;
@@ -258,18 +299,19 @@
         addMessage('user', question);
         const { msg, text } = addMessage('assistant', '');
         text.classList.add('typing');
+        const statusLine = el('div', 'msg-status');
+        msg.prepend(statusLine);
         setStats({});
-        $('s-sources').textContent = 'กำลังค้นหา…';
+        $('s-tools').textContent = 'กำลังถาม AURA-AGENT…';
 
         const started = performance.now();
         let firstToken = null;
-        let sources = [];
 
         try {
             const res = await api('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Accept': 'text/event-stream' },
-                body: JSON.stringify({ message: question, session_id: currentSession }),
+                body: JSON.stringify(payload),
             });
             if (!res.ok) throw new Error(await errorMessage(res));
 
@@ -295,22 +337,24 @@
                     if (!data || data === '</stream>') continue;
                     const payload = JSON.parse(data);
 
-                    if (event === 'sources') {
-                        sources = payload.sources;
-                        renderSourcesPanel(sources);
+                    if (event === 'status') {
+                        statusLine.textContent = payload.text;
                     } else if (event === 'delta') {
                         firstToken ??= performance.now();
+                        statusLine.remove();
                         text.textContent += payload.content;
                         $('messages').scrollTop = $('messages').scrollHeight;
                     } else if (event === 'done') {
                         currentSession = payload.session_id;
+                        const tools = payload.tools_used ?? [];
                         setStats({
                             ttft: firstToken && firstToken - started,
                             total: performance.now() - started,
-                            prompt: payload.usage?.prompt_tokens,
-                            output: payload.usage?.completion_tokens,
+                            agent: payload.latency_ms,
+                            tools: tools.length,
                         });
-                        renderSourcesInline(msg, sources);
+                        renderToolsPanel(tools);
+                        renderToolsInline(msg, tools);
                     } else if (event === 'error') {
                         throw new Error(payload.message);
                     }
@@ -321,6 +365,7 @@
             text.textContent = (text.textContent ? text.textContent + '\n\n' : '') + '⚠ ' + err.message;
         } finally {
             text.classList.remove('typing');
+            statusLine.remove();
             busy = false;
             $('send').disabled = false;
             input.focus();
@@ -335,11 +380,12 @@
         const res = await api('/console/status');
         if (!res.ok) { box.textContent = await errorMessage(res); return; }
         const data = await res.json();
-        const labels = { database: 'MySQL', ollama: 'Ollama', rag: 'RAG API' };
+        const labels = { agent: 'AURA-AGENT', database: 'MySQL', ollama: 'Ollama (Open WebUI)' };
         box.replaceChildren();
         const grid = el('div', 'status-row');
         for (const [key, label] of Object.entries(labels)) {
             const s = data[key];
+            if (!s) continue;
             grid.append(el('span', 'dot ' + (s.ok ? 'ok' : 'bad')));
             grid.append(el('span', 'status-name', `${label} · ${s.ok ? 'ปกติ' : 'ขัดข้อง'}`));
             grid.append(el('span', 'status-detail', s.detail));
@@ -360,11 +406,23 @@
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
     });
     $('new-chat').onclick = newChat;
-    $('refresh-status').onclick = loadStatus;
+
+    // ---------- Asking on behalf of a student ----------
+    function markActAs() {
+        $('actas').classList.toggle('active', actStudent() !== '');
+    }
+
+    if (canActAs) {
+        // A conversation belongs to one student, so switching student starts a new chat.
+        $('act-student').addEventListener('change', () => { markActAs(); if (currentSession) newChat(); });
+    }
 
     renderEmpty();
     loadSessions();
-    loadStatus();
+    if (isAdmin) {
+        $('refresh-status').onclick = loadStatus;
+        loadStatus();
+    }
 })();
 </script>
 @endpush

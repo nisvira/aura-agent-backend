@@ -29,25 +29,21 @@ final class AiTrace
         $this->data = $data;
     }
 
-    public static function start(string $channel, ?int $userId, string $question, bool $isTask = false): self
+    public static function start(string $channel, ?int $userId, string $question, bool $isTask = false, string $engine = 'ollama'): self
     {
         return new self([
             'request_id' => Context::get('request_id'),
             'user_id' => $userId,
             'channel' => $channel,
             'is_task' => $isTask,
+            'engine' => $engine,
             'question_chars' => mb_strlen($question),
         ]);
     }
 
-    public function rag(int $ms, int $hits, ?float $topScore, ?string $error): void
+    public function actingAs(?string $studentCode): void
     {
-        $this->data += [
-            'rag_status' => $error === null ? 'ok' : 'error',
-            'rag_ms' => $ms,
-            'rag_hits' => $hits,
-            'rag_top_score' => $topScore,
-        ];
+        $this->data['acting_as_student'] = $studentCode;
     }
 
     public function llmStarted(string $model): void
@@ -62,13 +58,22 @@ final class AiTrace
     }
 
     /**
-     * @param  array{prompt_tokens?: int|null, completion_tokens?: int|null}  $stats
+     * @param  array{prompt_tokens?: int|null, completion_tokens?: int|null, tools_used?: list<string>}  $stats
      */
     public function llmFinished(array $stats): void
     {
         $this->data['llm_ms'] = $this->llmStartedAt ? self::msSince($this->llmStartedAt) : null;
         $this->data['prompt_tokens'] = $stats['prompt_tokens'] ?? null;
         $this->data['completion_tokens'] = $stats['completion_tokens'] ?? null;
+        $this->data['tools_used'] = $stats['tools_used'] ?? null;
+    }
+
+    /**
+     * Drop the trace without writing it (the request was handed to another engine).
+     */
+    public function discard(): void
+    {
+        $this->finished = true;
     }
 
     /**

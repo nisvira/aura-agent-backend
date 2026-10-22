@@ -3,19 +3,28 @@
 namespace App\Http\Middleware;
 
 use App\Models\AuditLog;
+use App\Exceptions\UpstreamServiceException;
 use App\Models\User;
+use App\Services\YruPassport\YruPassportService;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Auth for the OpenAI-compatible endpoints. Accepts either:
- *  1. The shared OPENWEBUI_API_KEY + X-OpenWebUI-User-* headers
- *     (Open WebUI with ENABLE_FORWARD_USER_INFO_HEADERS=true), or
- *  2. A personal Sanctum token, for scripts or other OpenAI clients.
+ * Auth for the OpenAI-compatible endpoints. Accepts, in order:
+ *  1. The shared OPENWEBUI_API_KEY as Bearer + X-OpenWebUI-User-* headers
+ *     (Open WebUI with ENABLE_FORWARD_USER_INFO_HEADERS=true),
+ *  2. A personal Sanctum token, for scripts or other OpenAI clients,
+ *  3. The user's own YRU Passport access token (Open WebUI logged in through
+ *     Passport, connection auth "OAuth") — kept so students reach AURA-AGENT, or
+ *  4. The shared key in the X-OpenWebUI-Key header + X-OpenWebUI-User-* headers.
+ *     With connection auth "OAuth", Open WebUI sends no Authorization at all for
+ *     accounts without Passport (e.g. local admins); this static custom header
+ *     lets those accounts in, answered by Ollama.
  */
 class AuthenticateOpenWebUi
 {
@@ -31,7 +40,17 @@ class AuthenticateOpenWebUi
                 return $user;
             }
         } else {
-            $user = Auth::guard('sanctum')->user();
+            $user = Auth::guard('sanctum')->user() ?? $this->userFromPassportToken($token);
+
+            $headerKey = (string) $request->header('X-OpenWebUI-Key');
+
+            if (! $user && $serviceKey !== '' && $headerKey !== '' && hash_equals($serviceKey, $headerKey)) {
+                $user = $this->userFromForwardedHeaders($request);
+
+                if ($user instanceof JsonResponse) {
+                    return $user;
+                }
+            }
         }
 
         if (! $user) {
@@ -64,8 +83,10 @@ class AuthenticateOpenWebUi
         }
 
         $domains = config('openwebui.allowed_email_domains');
+        $isAdmin = User::where('email', $email)->first()?->isAdmin() ?? in_array($email, config('auth.admin_emails'), true);
 
-        if ($domains !== [] && ! in_array(Str::after($email, '@'), $domains, true)) {
+        // Admins may use any email domain (local accounts without YRU Passport).
+        if ($domains !== [] && ! $isAdmin && ! in_array(Str::after($email, '@'), $domains, true)) {
             return self::error('This account is not allowed to use this model', 'forbidden_domain', 403);
         }
 
@@ -80,6 +101,33 @@ class AuthenticateOpenWebUi
         }
 
         $user->forceFill(['last_login_at' => now()])->saveQuietly();
+
+        return $user;
+    }
+
+    /**
+     * Passport access tokens are JWTs (three dot-separated parts); Sanctum's are "id|secret".
+     * userinfo is cached for 5 minutes so each chat message doesn't hit Passport.
+     */
+    private function userFromPassportToken(string $token): ?User
+    {
+        if (substr_count($token, '.') !== 2) {
+            return null;
+        }
+
+        $passport = app(YruPassportService::class);
+
+        try {
+            $claims = Cache::remember('passport:userinfo:'.hash('sha256', $token), 300, fn () => $passport->getUserInfo($token));
+        } catch (UpstreamServiceException) {
+            return null;
+        }
+
+        $user = $passport->syncUser($claims);
+
+        if ($user->passport_access_token !== $token) {
+            $passport->storeTokens($user, ['access_token' => $token]);
+        }
 
         return $user;
     }

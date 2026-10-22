@@ -18,7 +18,15 @@ class SendChatMessageRequest extends FormRequest
         return [
             'message' => ['required', 'string', 'max:'.config('chat.max_message_length')],
             'session_id' => ['nullable', 'integer'],
+            // Admins / instructors asking about one student (checked by the "view-student" gate).
+            'act_as_student' => ['nullable', 'digits:9'],
+            'reason' => ['required_with:act_as_student', 'nullable', 'string', 'max:200'],
         ];
+    }
+
+    public function actAsStudent(): ?string
+    {
+        return $this->filled('act_as_student') ? $this->string('act_as_student')->toString() : null;
     }
 
     public function sessionId(): ?int

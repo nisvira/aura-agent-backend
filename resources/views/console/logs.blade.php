@@ -17,8 +17,21 @@
         'ratelimit.exceeded' => 'เกินโควตา (429)',
         'user.created' => 'สร้างผู้ใช้ใหม่',
         'chat.session.deleted' => 'ลบห้องแชท',
+        'support.act_as' => 'ถามแทนนักศึกษา',
+        'support.act_as.denied' => 'ถามแทนนักศึกษาไม่ได้ (ไม่มีสิทธิ์)',
     ];
-    $warnEvents = ['auth.login.failed', 'auth.state_mismatch', 'auth.invalid_api_key', 'access.denied', 'ratelimit.exceeded'];
+    $codeLabels = [
+        'PASSPORT_REQUIRED' => 'ยังไม่ได้ login ด้วย YRU Passport',
+        'NOT_STUDENT' => 'ไม่ใช่บัญชีนักศึกษา',
+        'TOKEN_EXPIRED' => 'Passport session หมดอายุ',
+        'UPSTREAM_UNAVAILABLE' => 'ระบบกิจกรรม / Passport ไม่ตอบ',
+        'LLM_UNAVAILABLE' => 'LLM ของ agent ไม่พร้อม',
+        'AGENT_UNAVAILABLE' => 'ติดต่อ AURA-AGENT ไม่ได้',
+        'AGENT_REJECTED' => 'AURA-AGENT ปฏิเสธ (service key)',
+        'INCOMPLETE' => 'stream จบก่อนตอบเสร็จ',
+        'INTERNAL' => 'error ภายใน agent',
+    ];
+    $warnEvents = ['support.act_as.denied', 'auth.login.failed', 'auth.state_mismatch', 'auth.invalid_api_key', 'access.denied', 'ratelimit.exceeded'];
 @endphp
 
 @push('styles')
@@ -71,8 +84,8 @@
             </div>
             <div class="tile"><div class="tile-label">เวลาตอบ p95</div><div class="tile-value">{{ $ms($summary['p95_ms']) }}</div></div>
             <div class="tile">
-                <div class="tile-label">RAG หาไม่เจอ</div>
-                <div @class(['tile-value', 'warn' => $summary['no_hits'] > 0])>{{ number_format($summary['no_hits']) }}</div>
+                <div class="tile-label">ถูกปฏิเสธ (ไม่ใช่นักศึกษา / ไม่ได้ login)</div>
+                <div class="tile-value">{{ number_format($summary['turned_away']) }}</div>
             </div>
             <div class="tile"><div class="tile-label">งานเบื้องหลัง Open WebUI</div><div class="tile-value">{{ number_format($summary['tasks']) }}</div></div>
         </div>
@@ -80,14 +93,14 @@
 
     <section>
         <h2>รายวัน (14 วัน)</h2>
-        <p class="lead muted">เวลาตามประเทศไทย · เวลาเฉลี่ยนับเฉพาะคำถามที่ตอบสำเร็จ</p>
+        <p class="lead muted">เวลาตามประเทศไทย · Error ไม่รวมคำถามที่ถูกปฏิเสธ · เวลาเฉลี่ยนับเฉพาะคำถามที่ตอบสำเร็จ</p>
         <div class="table-wrap">
             <table class="data">
                 <thead>
                     <tr>
-                        <th>วันที่</th><th class="num">คำถาม</th><th class="num">Error</th><th class="num">ยกเลิกกลางคัน</th>
-                        <th class="num">RAG หาไม่เจอ</th><th class="num">RAG ล่ม</th><th class="num">ถึงคำแรก</th>
-                        <th class="num">เวลาตอบเฉลี่ย</th><th class="num">Tokens</th>
+                        <th>วันที่</th><th class="num">คำถาม</th><th class="num">ตอบแล้ว</th><th class="num">Error</th>
+                        <th class="num">ถูกปฏิเสธ</th><th class="num">ยกเลิกกลางคัน</th><th class="num">ถึงคำแรก</th>
+                        <th class="num">เวลาตอบเฉลี่ย</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -95,57 +108,73 @@
                         <tr>
                             <td class="nowrap">{{ \Illuminate\Support\Carbon::parse($d->day)->format('d/m/Y') }}</td>
                             <td class="num">{{ number_format($d->total) }}</td>
-                            <td class="num">{{ $d->errors ?: '–' }}</td>
+                            <td class="num">{{ number_format($d->answered) }}</td>
+                            <td class="num">{{ $d->errors - $d->turned_away ?: '–' }}</td>
+                            <td class="num">{{ $d->turned_away ?: '–' }}</td>
                             <td class="num">{{ $d->aborted ?: '–' }}</td>
-                            <td class="num">{{ $d->no_hits ?: '–' }}</td>
-                            <td class="num">{{ $d->rag_down ?: '–' }}</td>
                             <td class="num">{{ $ms($d->avg_ttft_ms) }}</td>
                             <td class="num">{{ $ms($d->avg_total_ms) }}</td>
-                            <td class="num">{{ number_format($d->tokens) }}</td>
                         </tr>
                     @empty
-                        <tr><td colspan="9" class="empty-row">ยังไม่มีข้อมูล</td></tr>
+                        <tr><td colspan="8" class="empty-row">ยังไม่มีข้อมูล</td></tr>
                     @endforelse
                 </tbody>
             </table>
         </div>
     </section>
 
-    <section>
-        <h2>คำถามที่ RAG หาข้อมูลไม่เจอ</h2>
-        <p class="lead muted">RAG ทำงานปกติแต่ไม่มีเอกสารที่เกี่ยวข้อง ใช้เป็นรายการเอกสารที่ควรเพิ่มเข้าฐานความรู้ (30 รายการล่าสุด)</p>
-        <div class="table-wrap">
-            <table class="data">
-                <thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>คำถาม</th><th>ช่องทาง</th></tr></thead>
-                <tbody>
-                    @forelse ($knowledgeGaps as $row)
-                        <tr>
-                            <td class="nowrap">{{ $when($row->created_at) }}</td>
-                            <td class="nowrap">{{ $row->user?->name ?? '–' }}</td>
-                            <td class="question">{{ $row->question?->content ?? '(ข้อความถูกลบแล้ว)' }}</td>
-                            <td class="nowrap"><span class="pill neutral">{{ $row->channel }}</span></td>
-                        </tr>
-                    @empty
-                        <tr><td colspan="4" class="empty-row">ไม่มี (หรือ RAG ยังไม่ได้เปิดใช้งาน)</td></tr>
-                    @endforelse
-                </tbody>
-            </table>
+    <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;">
+        <div>
+            <h2>Tools ที่ AURA-AGENT ใช้ (7 วัน)</h2>
+            <p class="lead muted">ข้อมูลที่ agent ไปดึงมาตอบ นับต่อคำถามที่ตอบสำเร็จ</p>
+            <div class="table-wrap">
+                <table class="data">
+                    <thead><tr><th>Tool</th><th class="num">ครั้ง</th></tr></thead>
+                    <tbody>
+                        @forelse ($tools as $tool => $count)
+                            <tr><td class="meta">{{ $tool }}</td><td class="num">{{ number_format($count) }}</td></tr>
+                        @empty
+                            <tr><td colspan="2" class="empty-row">ยังไม่มีคำตอบที่ใช้ tool</td></tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div>
+            <h2>สาเหตุของ error (7 วัน)</h2>
+            <p class="lead muted">รหัสจาก AURA-AGENT หรือจาก backend ก่อนส่งให้ agent</p>
+            <div class="table-wrap">
+                <table class="data">
+                    <thead><tr><th>รหัส</th><th>ความหมาย</th><th class="num">ครั้ง</th></tr></thead>
+                    <tbody>
+                        @forelse ($errorCodes as $row)
+                            <tr>
+                                <td class="meta">{{ $row->code }}</td>
+                                <td>{{ $codeLabels[$row->code] ?? '–' }}</td>
+                                <td class="num">{{ number_format($row->total) }}</td>
+                            </tr>
+                        @empty
+                            <tr><td colspan="3" class="empty-row">ไม่มี error</td></tr>
+                        @endforelse
+                    </tbody>
+                </table>
+            </div>
         </div>
     </section>
 
     <section>
         <h2>คำขอที่มีปัญหา</h2>
-        <p class="lead muted">LLM error, ผู้ใช้ปิดหน้าก่อนตอบเสร็จ หรือ RAG ติดต่อไม่ได้ (20 รายการล่าสุด)</p>
+        <p class="lead muted">Error, ถูกปฏิเสธ หรือผู้ใช้ปิดหน้าก่อนตอบเสร็จ (20 รายการล่าสุด)</p>
         <div class="table-wrap">
             <table class="data">
-                <thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>สถานะ</th><th>RAG</th><th class="num">เวลา</th><th>รายละเอียด</th><th>Request ID</th></tr></thead>
+                <thead><tr><th>เวลา</th><th>ผู้ใช้</th><th>สถานะ</th><th>ระบบ</th><th class="num">เวลา</th><th>รายละเอียด</th><th>Request ID</th></tr></thead>
                 <tbody>
                     @forelse ($failures as $row)
                         <tr>
                             <td class="nowrap">{{ $when($row->created_at) }}</td>
                             <td class="nowrap">{{ $row->user?->name ?? '–' }}{{ $row->is_task ? ' · task' : '' }}</td>
                             <td><span @class(['pill', 'ok' => $row->status === 'success', 'bad' => $row->status === 'error', 'warn' => $row->status === 'aborted'])>{{ $row->status }}</span></td>
-                            <td><span @class(['pill', 'ok' => $row->rag_status === 'ok', 'bad' => $row->rag_status === 'error', 'neutral' => $row->rag_status === null])>{{ $row->rag_status ?? '–' }}</span></td>
+                            <td><span class="pill neutral">{{ $row->is_task ? 'Ollama (task)' : 'AURA-AGENT' }}</span></td>
                             <td class="num">{{ $ms($row->total_ms) }}</td>
                             <td class="meta">{{ $row->error ?? '' }}</td>
                             <td class="meta">{{ $row->request_id }}</td>

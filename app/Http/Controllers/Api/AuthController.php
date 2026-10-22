@@ -23,7 +23,9 @@ class AuthController extends Controller
         $request->validate(['access_token' => ['required', 'string']]);
 
         try {
-            $user = $passport->syncUser($passport->getUserInfo($request->string('access_token')->toString()));
+            $accessToken = $request->string('access_token')->toString();
+            $user = $passport->syncUser($passport->getUserInfo($accessToken));
+            $passport->storeTokens($user, ['access_token' => $accessToken]);
         } catch (UpstreamServiceException $e) {
             AuditLog::record('auth.login.failed', metadata: ['method' => 'passport_token', 'reason' => $e->getMessage()]);
 
@@ -37,16 +39,36 @@ class AuthController extends Controller
 
     public function me(Request $request): JsonResponse
     {
-        return response()->json($request->user());
+        $user = $request->user();
+
+        return response()->json([
+            ...$user->toArray(),
+            // admin | instructor | student | staff | null (no Passport login)
+            'role' => $user->effectiveRole()?->value,
+        ]);
     }
 
-    public function logout(Request $request): Response
+    /**
+     * POST /api/auth/logout — revokes this API token (204).
+     * With {"passport": true} also forgets the user's YRU Passport tokens and
+     * returns the Passport logout page for the frontend to open (200).
+     */
+    public function logout(Request $request, YruPassportService $passport): Response|JsonResponse
     {
-        AuditLog::record('auth.logout', $request->user(), metadata: ['method' => 'token']);
+        $user = $request->user();
+        $fromPassport = $request->boolean('passport');
 
-        $request->user()->currentAccessToken()->delete();
+        AuditLog::record('auth.logout', $user, metadata: ['method' => 'token', 'passport' => $fromPassport]);
 
-        return response()->noContent();
+        $user->currentAccessToken()->delete();
+
+        if (! $fromPassport) {
+            return response()->noContent();
+        }
+
+        $passport->forgetTokens($user);
+
+        return response()->json(['passport_logout_url' => config('services.yru_passport.logout_url')]);
     }
 
     /**

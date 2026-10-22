@@ -3,6 +3,7 @@
 namespace App\Exceptions;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
@@ -15,15 +16,37 @@ class UpstreamServiceException extends RuntimeException
         string $message,
         public readonly int $status = 503,
         ?\Throwable $previous = null,
+        /** Machine-readable reason, e.g. AURA-AGENT's TOKEN_EXPIRED or NOT_STUDENT. */
+        public readonly ?string $errorCode = null,
     ) {
         parent::__construct($message, 0, $previous);
     }
 
+    /**
+     * Refusals (401/403, e.g. NOT_STUDENT, PASSPORT_REQUIRED) are expected and
+     * already in the AI/audit logs, so they are not reported. Real upstream
+     * failures get one warning line instead of a full stack trace.
+     */
+    public function report(): bool
+    {
+        if ($this->status >= 500) {
+            Log::warning('Upstream service failed', [
+                'service' => $this->service,
+                'code' => $this->errorCode,
+                'message' => $this->getMessage(),
+                'cause' => $this->getPrevious()?->getMessage(),
+            ]);
+        }
+
+        return true;
+    }
+
     public function render(): JsonResponse
     {
-        return response()->json([
+        return response()->json(array_filter([
             'message' => $this->getMessage(),
             'service' => $this->service,
-        ], $this->status);
+            'code' => $this->errorCode,
+        ]), $this->status);
     }
 }

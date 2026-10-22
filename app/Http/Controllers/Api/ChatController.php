@@ -7,9 +7,12 @@ use App\Http\Controllers\Concerns\LocksChatPerUser;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\SendChatMessageRequest;
 use App\Http\Resources\ChatMessageResource;
+use App\Models\AuditLog;
+use App\Services\Agent\ActAs;
 use App\Services\Chat\ChatService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\StreamedEvent;
+use Illuminate\Support\Facades\Gate;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ChatController extends Controller
@@ -23,6 +26,7 @@ class ChatController extends Controller
      */
     public function store(SendChatMessageRequest $request): JsonResponse
     {
+        $actAs = $this->actAs($request);
         $lock = $this->acquireUserLock($request->user()->id);
 
         try {
@@ -31,6 +35,7 @@ class ChatController extends Controller
                 $request->string('message')->toString(),
                 $request->sessionId(),
                 $this->isConsole($request) ? 'console' : 'api',
+                $actAs,
             );
         } finally {
             $lock->release();
@@ -45,7 +50,8 @@ class ChatController extends Controller
 
     /**
      * POST /api/chat/stream — same as store() but streams the answer as
-     * Server-Sent Events: "sources", then many "delta", then "done".
+     * Server-Sent Events: "status" (agent looking things up) / "sources" (RAG),
+     * then many "delta", then "done" — or "error" {message, code}.
      */
     public function stream(SendChatMessageRequest $request): StreamedResponse
     {
@@ -53,6 +59,7 @@ class ChatController extends Controller
         $question = $request->string('message')->toString();
         $sessionId = $request->sessionId();
         $channel = $this->isConsole($request) ? 'console' : 'api_stream';
+        $actAs = $this->actAs($request);
 
         // Check ownership now: once the stream starts, headers are sent and a 404 is no longer possible.
         if ($sessionId !== null) {
@@ -61,20 +68,53 @@ class ChatController extends Controller
 
         $lock = $this->acquireUserLock($user->id);
 
-        return response()->eventStream(function () use ($lock, $user, $question, $sessionId, $channel) {
+        return response()->eventStream(function () use ($lock, $user, $question, $sessionId, $channel, $actAs) {
             // Keep running after a client disconnect so the loop can stop cleanly and release the lock.
             ignore_user_abort(true);
 
             try {
-                foreach ($this->chat->stream($user, $question, $sessionId, $channel) as $event) {
+                foreach ($this->chat->stream($user, $question, $sessionId, $channel, $actAs) as $event) {
                     yield new StreamedEvent(event: $event['type'], data: $event);
                 }
             } catch (UpstreamServiceException $e) {
-                yield new StreamedEvent(event: 'error', data: ['message' => $e->getMessage()]);
+                yield new StreamedEvent(event: 'error', data: array_filter(['message' => $e->getMessage(), 'code' => $e->errorCode]));
             } finally {
                 $lock->release();
             }
         }, headers: ['X-Accel-Buffering' => 'no']);
+    }
+
+    /**
+     * act_as_student → an authorised ActAs (or 403), audited either way.
+     * Asking about yourself is just a normal question.
+     */
+    private function actAs(SendChatMessageRequest $request): ?ActAs
+    {
+        $user = $request->user();
+        $studentCode = $request->actAsStudent();
+
+        if ($studentCode === null || $studentCode === $user->username) {
+            return null;
+        }
+
+        if (Gate::forUser($user)->denies('view-student', $studentCode)) {
+            AuditLog::record('support.act_as.denied', $user, metadata: [
+                'student' => $studentCode,
+                'role' => $user->effectiveRole()?->value,
+            ]);
+
+            abort(403, 'ไม่มีสิทธิ์ดูข้อมูลของนักศึกษาคนนี้');
+        }
+
+        $actAs = new ActAs($studentCode, $user->effectiveRole(), $user, $request->string('reason')->toString());
+
+        AuditLog::record('support.act_as', $user, metadata: [
+            'student' => $studentCode,
+            'role' => $actAs->role->value,
+            'reason' => $actAs->reason,
+        ]);
+
+        return $actAs;
     }
 
     /**

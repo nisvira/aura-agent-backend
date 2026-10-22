@@ -129,4 +129,18 @@ return [
         explode(',', (string) env('ADMIN_EMAILS', '')),
     ))),
 
+    // A Passport "staff" account counts as an instructor when prefix_academic is an
+    // academic title or position_name is a teaching position. prefix_academic also holds
+    // ordinary prefixes for non-academic staff (seen: "น.ส." with position "พนักงานธุรการ"),
+    // so only real titles count. Real instructor (AURA-AGENT test, 2026-10-22):
+    // user_type "staff", position_name "อาจารย์".
+    'instructor_prefix_pattern' => env('INSTRUCTOR_PREFIX_PATTERN', '/^(ศ\.|รศ\.|ผศ\.|อ\.|ดร\.|ศาสตราจารย์|รองศาสตราจารย์|ผู้ช่วยศาสตราจารย์|อาจารย์|prof|assoc|asst|dr\.)/iu'),
+    'instructor_position_pattern' => env('INSTRUCTOR_POSITION_PATTERN', '/อาจารย์|ศาสตราจารย์|lecturer|professor/iu'),
+
+    // Same, by YRU Passport username (a student's is their student code, e.g. 406510024).
+    'admin_usernames' => array_values(array_filter(array_map(
+        fn ($username) => strtolower(trim($username)),
+        explode(',', (string) env('ADMIN_USERNAMES', '')),
+    ))),
+
 ];

@@ -43,7 +43,7 @@ class AiRequest extends Model
     {
         return [
             'is_task' => 'boolean',
-            'rag_top_score' => 'float',
+            'tools_used' => 'array',
             'created_at' => 'datetime',
         ];
     }

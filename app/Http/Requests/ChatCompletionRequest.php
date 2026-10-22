@@ -63,21 +63,6 @@ class ChatCompletionRequest extends FormRequest
         return Arr::last($this->conversation())['content'];
     }
 
-    /**
-     * Previous user/assistant turns. Client system prompts are dropped so the
-     * university system prompt in config/chat.php always applies.
-     *
-     * @return list<array{role: string, content: string}>
-     */
-    public function history(): array
-    {
-        return collect($this->conversation())
-            ->slice(0, -1)
-            ->filter(fn (array $m) => in_array($m['role'], ['user', 'assistant'], true) && $m['content'] !== '')
-            ->values()
-            ->all();
-    }
-
     public function firstQuestion(): string
     {
         return collect($this->conversation())->firstWhere('role', 'user')['content'] ?? $this->question();
@@ -85,7 +70,7 @@ class ChatCompletionRequest extends FormRequest
 
     /**
      * Open WebUI background jobs (title, tags, follow-ups, autocomplete...).
-     * These go straight to Ollama: no RAG, no history saved.
+     * These go straight to Ollama: nothing is saved.
      */
     public function isTask(): bool
     {

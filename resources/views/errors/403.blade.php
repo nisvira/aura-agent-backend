@@ -9,7 +9,7 @@
         <h1 style="font-size:22px;margin:20px 0 6px;">ไม่มีสิทธิ์เข้าถึงหน้านี้</h1>
         <p class="muted" style="margin:0 0 22px;">
             @auth
-                บัญชี {{ auth()->user()->email ?? auth()->user()->name }} ยังไม่ได้รับสิทธิ์ผู้ดูแลระบบ
+                บัญชี {{ auth()->user()->email ?? auth()->user()->name }} ไม่มีสิทธิ์ใช้หน้านี้ (ใช้ได้เฉพาะแอดมินและอาจารย์)
             @else
                 {{ $exception->getMessage() ?: 'กรุณาเข้าสู่ระบบด้วยบัญชีที่มีสิทธิ์' }}
             @endauth

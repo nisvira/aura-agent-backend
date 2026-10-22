@@ -16,6 +16,7 @@ class ChatSessionResource extends JsonResource
         return [
             'id' => $this->id,
             'title' => $this->title,
+            'acting_as_student' => $this->acting_as_student,
             'messages' => ChatMessageResource::collection($this->whenLoaded('messages')),
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,

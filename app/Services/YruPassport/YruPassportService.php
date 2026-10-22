@@ -10,13 +10,15 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 /**
  * OpenID Connect client for YRU Passport (passport.yru.ac.th).
  *
- * Flow: redirect user to /oauth/authorize → receive ?code → exchange for an
- * access token → GET /oidc/userinfo → create/update the local user.
+ * Flow: redirect user to /oauth/authorize → receive ?code → exchange for
+ * tokens → GET /oidc/userinfo → create/update the local user and keep the
+ * tokens for AURA-AGENT.
  */
 class YruPassportService
 {
@@ -34,26 +36,116 @@ class YruPassportService
     }
 
     /**
-     * Exchange an authorization code for a YRU Passport access token.
+     * Exchange an authorization code for YRU Passport tokens.
+     *
+     * @return array{access_token: string, refresh_token?: string, expires_in?: int}
      */
-    public function exchangeCode(string $code): string
+    public function exchangeCode(string $code): array
+    {
+        return $this->tokenRequest([
+            'grant_type' => 'authorization_code',
+            'redirect_uri' => $this->config['redirect_uri'],
+            'code' => $code,
+        ], 'ไม่สามารถยืนยันตัวตนกับ YRU Passport ได้');
+    }
+
+    /**
+     * @return array{access_token: string, refresh_token?: string, expires_in?: int}
+     */
+    public function refresh(string $refreshToken): array
+    {
+        return $this->tokenRequest([
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'scope' => $this->config['scopes'],
+        ], 'YRU Passport session หมดอายุ กรุณาเข้าสู่ระบบใหม่');
+    }
+
+    /**
+     * Keep the user's Passport tokens (encrypted at rest) so the backend can call
+     * AURA-AGENT on their behalf. A response without a refresh token keeps the old one.
+     */
+    public function storeTokens(User $user, array $tokens): void
+    {
+        $access = (string) ($tokens['access_token'] ?? '');
+
+        $user->forceFill([
+            'passport_access_token' => $access,
+            'passport_refresh_token' => $tokens['refresh_token'] ?? $user->passport_refresh_token,
+            'passport_token_expires_at' => isset($tokens['expires_in'])
+                ? now()->addSeconds((int) $tokens['expires_in'])
+                : $this->jwtExpiry($access),
+        ])->save();
+    }
+
+    /**
+     * A Passport access token for this user that is still valid for at least a
+     * minute, refreshed when needed. Null when there is none (password login,
+     * Open WebUI header login) or the refresh failed — the user must log in again.
+     */
+    public function accessTokenFor(User $user): ?string
+    {
+        if (! $user->passport_access_token) {
+            return null;
+        }
+
+        $expiresAt = $user->passport_token_expires_at;
+
+        if ($expiresAt === null || $expiresAt->isAfter(now()->addMinute())) {
+            return $user->passport_access_token;
+        }
+
+        if (! $user->passport_refresh_token) {
+            return null;
+        }
+
+        try {
+            $this->storeTokens($user, $this->refresh($user->passport_refresh_token));
+        } catch (UpstreamServiceException) {
+            $this->forgetTokens($user);
+
+            return null;
+        }
+
+        return $user->passport_access_token;
+    }
+
+    public function forgetTokens(User $user): void
+    {
+        $user->forceFill([
+            'passport_access_token' => null,
+            'passport_refresh_token' => null,
+            'passport_token_expires_at' => null,
+        ])->save();
+    }
+
+    /**
+     * The `exp` claim of a JWT access token, read without verifying it (only used
+     * to know when to refresh; Passport itself validates the token on every use).
+     */
+    private function jwtExpiry(string $token): ?Carbon
+    {
+        $payload = json_decode((string) base64_decode(strtr(explode('.', $token)[1] ?? '', '-_', '+/')), true);
+
+        return isset($payload['exp']) ? Carbon::createFromTimestamp((int) $payload['exp']) : null;
+    }
+
+    private function tokenRequest(array $params, string $failureMessage): array
     {
         try {
             $response = $this->http()
                 ->asForm()
                 ->post($this->config['token_path'], [
-                    'grant_type' => 'authorization_code',
                     'client_id' => $this->config['client_id'],
                     'client_secret' => $this->config['client_secret'],
-                    'redirect_uri' => $this->config['redirect_uri'],
-                    'code' => $code,
+                    ...$params,
                 ])
                 ->throw();
         } catch (ConnectionException|RequestException $e) {
-            throw new UpstreamServiceException('yru_passport', 'ไม่สามารถยืนยันตัวตนกับ YRU Passport ได้', 401, $e);
+            throw new UpstreamServiceException('yru_passport', $failureMessage, 401, $e);
         }
 
-        return (string) $response->json('access_token');
+        return $response->json();
     }
 
     /**
@@ -102,6 +194,7 @@ class YruPassportService
         $user->fill([
             'passport_id' => $sub,
             'username' => $this->first($claims, ['preferred_username', 'username']),
+            'role' => User::roleFromClaims($claims),
             'name' => $name !== '' ? $name : $sub,
             'email' => $email,
             'passport_profile' => $claims,

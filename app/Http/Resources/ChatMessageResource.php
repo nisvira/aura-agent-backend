@@ -18,7 +18,7 @@ class ChatMessageResource extends JsonResource
             'session_id' => $this->session_id,
             'role' => $this->role,
             'content' => $this->content,
-            'sources' => $this->metadata['sources'] ?? [],
+            'tools_used' => $this->metadata['tools_used'] ?? [],
             'created_at' => $this->created_at,
         ];
     }

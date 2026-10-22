@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['title', 'external_id'])]
+#[Fillable(['title', 'external_id', 'agent_thread_id', 'acting_as_student'])]
 class ChatSession extends Model
 {
     public function user(): BelongsTo

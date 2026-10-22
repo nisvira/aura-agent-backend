@@ -29,15 +29,24 @@
         <div class="brand"><span class="brand-mark">A</span> Aura · Test Console</div>
         <nav class="nav">
             <a href="{{ route('console') }}" @class(['active' => $active === 'chat'])>แชท</a>
-            <a href="{{ route('console.logs') }}" @class(['active' => $active === 'logs'])>Logs</a>
+            @can('admin')
+                <a href="{{ route('console.logs') }}" @class(['active' => $active === 'logs'])>Logs</a>
+            @endcan
         </nav>
     </div>
     <div class="who">
         <span class="who-name muted">{{ auth()->user()->name }}</span>
-        <span class="badge">Admin</span>
+        <span class="badge">{{ auth()->user()->effectiveRole()?->label() ?? 'ไม่มีบทบาท' }}</span>
         <form method="POST" action="{{ route('logout') }}">
             @csrf
             <button class="btn btn-sm" type="submit">ออกจากระบบ</button>
         </form>
+        @if (auth()->user()->passport_profile)
+            <form method="POST" action="{{ route('logout.passport') }}"
+                  onsubmit="return confirm('ออกจากระบบนี้และออกจาก YRU Passport ด้วย?\nครั้งต่อไปต้องกรอกรหัสผ่าน YRU Passport ใหม่')">
+                @csrf
+                <button class="btn btn-sm" type="submit" title="ใช้เมื่อเป็นเครื่องที่ใช้ร่วมกับผู้อื่น">ออกจาก YRU Passport</button>
+            </form>
+        @endif
     </div>
 </header>

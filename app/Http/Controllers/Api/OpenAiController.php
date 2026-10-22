@@ -68,22 +68,18 @@ class OpenAiController extends Controller
         $externalId = $request->header('X-OpenWebUI-Chat-Id') ?: 'hash:'.sha1($request->firstQuestion());
         $session = $this->chat->sessionForExternalChat($user, $externalId, $request->firstQuestion());
         $question = $request->question();
-        $history = $request->history();
 
         $lock = $this->acquireUserLock($user->id);
 
         if ($stream) {
-            return $this->streamResponse($this->chat->streamWithHistory($session, $question, $history), $lock->release(...));
+            return $this->streamResponse($this->chat->streamInSession($session, $question), $lock->release(...));
         }
 
         try {
-            return $this->guard(function () use ($session, $question, $history) {
-                $message = $this->chat->replyWithHistory($session, $question, $history)['message'];
+            return $this->guard(function () use ($session, $question) {
+                $message = $this->chat->replyInSession($session, $question)['message'];
 
-                return $this->completion(
-                    $message->content.$this->sourcesMarkdown($message->metadata['sources'] ?? []),
-                    $message->metadata,
-                );
+                return $this->completion($message->content, $message->metadata);
             });
         } finally {
             $lock->release();
@@ -112,7 +108,7 @@ class OpenAiController extends Controller
     }
 
     /**
-     * Wrap raw Ollama deltas in the same event shape ChatService::streamWithHistory() yields.
+     * Wrap raw Ollama deltas in the same event shape ChatService::streamInSession() yields.
      */
     private function taskEvents(array $messages, AiTrace $trace): Generator
     {
@@ -169,7 +165,6 @@ class OpenAiController extends Controller
 
             $id = 'chatcmpl-'.Str::random(24);
             $created = time();
-            $sources = [];
 
             $send = function (array $payload) {
                 echo 'data: '.json_encode($payload, JSON_UNESCAPED_UNICODE)."\n\n";
@@ -199,20 +194,13 @@ class OpenAiController extends Controller
                     }
 
                     match ($event['type']) {
-                        'sources' => $sources = $event['sources'],
                         'delta' => $send($chunk(['content' => $event['content']])),
-                        'done' => (function () use ($send, $chunk, $sources, $event) {
-                            if ($markdown = $this->sourcesMarkdown($sources)) {
-                                $send($chunk(['content' => $markdown]));
-                            }
-
-                            $send($chunk([], 'stop', $this->usage($event['usage'] ?? [])));
-                        })(),
+                        'done' => $send($chunk([], 'stop', $this->usage($event['usage'] ?? []))),
                         default => null,
                     };
                 }
             } catch (UpstreamServiceException $e) {
-                $send(['error' => ['message' => $e->getMessage(), 'type' => 'upstream_error', 'code' => $e->service]]);
+                $send(['error' => ['message' => $e->getMessage(), 'type' => 'upstream_error', 'code' => $e->errorCode ?? $e->service]]);
             } finally {
                 if ($onFinish) {
                     $onFinish();
@@ -236,7 +224,7 @@ class OpenAiController extends Controller
         try {
             return $callback();
         } catch (UpstreamServiceException $e) {
-            return AuthenticateOpenWebUi::error($e->getMessage(), $e->service, $e->status);
+            return AuthenticateOpenWebUi::error($e->getMessage(), $e->errorCode ?? $e->service, $e->status);
         }
     }
 
@@ -248,19 +236,4 @@ class OpenAiController extends Controller
         return ['prompt_tokens' => $prompt, 'completion_tokens' => $completion, 'total_tokens' => $prompt + $completion];
     }
 
-    /**
-     * Numbered like the [n] markers in the prompt, so the model's citations line up.
-     */
-    private function sourcesMarkdown(array $sources): string
-    {
-        if (! config('openwebui.append_sources')) {
-            return '';
-        }
-
-        $lines = collect($sources)
-            ->map(fn (array $s, int $i) => $s['source'] ? '['.($i + 1).'] '.$s['source'] : null)
-            ->filter();
-
-        return $lines->isEmpty() ? '' : "\n\n---\n**แหล่งอ้างอิง**\n".$lines->implode("  \n");
-    }
 }

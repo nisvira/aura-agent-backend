@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
 use App\Http\Controllers\Api\ChatSessionController;
+use App\Http\Controllers\Api\DirectoryController;
 use App\Http\Controllers\Api\OpenAiController;
 use Illuminate\Support\Facades\Route;
 
@@ -24,6 +25,8 @@ Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
     Route::get('/chat/sessions/{session}', [ChatSessionController::class, 'show'])->whereNumber('session');
     Route::patch('/chat/sessions/{session}', [ChatSessionController::class, 'update'])->whereNumber('session');
     Route::delete('/chat/sessions/{session}', [ChatSessionController::class, 'destroy'])->whereNumber('session');
+
+    Route::get('/instructors', [DirectoryController::class, 'instructors'])->middleware('can:admin');
 });
 
 // OpenAI-compatible API for Open WebUI. Base URL: http://<host>:8000/api/v1

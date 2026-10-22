@@ -20,6 +20,10 @@
         border-radius: 8px; padding: 8px 12px; margin: 0 0 14px;
     }
     .note { margin-top: 20px; font-size: 12.5px; text-align: center; }
+    .warn {
+        font-size: 13px; color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent);
+        border-radius: 8px; padding: 8px 12px; margin: 0 0 14px;
+    }
 </style>
 @endpush
 
@@ -28,10 +32,23 @@
     <div class="login-card">
         <div class="brand"><span class="brand-mark">A</span> Aura · Test Console</div>
         <h1>เข้าสู่ระบบ</h1>
-        <p class="sub muted">สำหรับผู้ดูแลระบบเพื่อทดสอบการทำงานของแชท RAG และ LLM</p>
+        <p class="sub muted">สำหรับแอดมินและอาจารย์ ทดสอบการถามตอบกับ AURA-AGENT</p>
+
+        @php
+            $loginUrl = \App\Http\Controllers\Auth\YruPassportController::loginUrl();
+            // The Passport callback only works when login starts on its host (SSH tunnel to 127.0.0.1).
+            $wrongHost = parse_url($loginUrl, PHP_URL_HOST) !== request()->getHost();
+        @endphp
 
         @if (session('status'))
             <p class="error">{{ session('status') }}</p>
+        @endif
+
+        @if ($wrongHost)
+            <p class="warn">
+                ปุ่ม YRU Passport ใช้ได้เมื่อเปิดหน้านี้ที่ <a href="{{ $loginUrl }}">{{ $loginUrl }}</a> เท่านั้น
+                (ต้องเปิด SSH tunnel ก่อน) ส่วนการเข้าด้วยอีเมลและรหัสผ่านด้านล่างใช้ได้ตามปกติ
+            </p>
         @endif
 
         <a class="btn btn-primary w-full" href="{{ route('yru.redirect', ['to' => 'console']) }}">
@@ -57,7 +74,7 @@
             <button class="btn w-full" type="submit">เข้าสู่ระบบ</button>
         </form>
 
-        <p class="note muted">เฉพาะผู้ที่ได้รับสิทธิ์ผู้ดูแลระบบเท่านั้น</p>
+        <p class="note muted">เข้าได้เฉพาะแอดมินและอาจารย์</p>
     </div>
 </div>
 @endsection
