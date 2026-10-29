@@ -26,13 +26,7 @@
     .section-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; margin: 8px 4px 2px; }
 
     /* Chat */
-    .chat { display: grid; grid-template-rows: 1fr auto auto; min-height: 0; }
-    .actas { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 16px 0; font-size: 13px; }
-    .actas label { font-weight: 600; color: var(--muted); }
-    .actas .input { flex: 1; min-width: 170px; padding: 7px 10px; font-size: 13.5px; }
-    .actas.active .input#act-student { border-color: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent); }
-    .actas-note { flex-basis: 100%; color: var(--muted); font-size: 12.5px; }
-    .actas-note:empty { display: none; }
+    .chat { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
     .messages { overflow-y: auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 14px; }
     .msg { max-width: min(760px, 92%); padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
     .msg.user { align-self: flex-end; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }
@@ -78,8 +72,8 @@
 @php
     $role = auth()->user()->effectiveRole();
     $isAdmin = $role === \App\Enums\UserRole::Admin;
-    // Instructors ask about their advisees in their own name (AURA-AGENT checks the advisee list).
-    $canActAs = $isAdmin;
+    // Everyone asks in their own name; AURA-AGENT scopes answers to the Passport token
+    // (instructors see their advisees). The act_as_student API stays for a future support mode.
     $isInstructor = $role === \App\Enums\UserRole::Instructor;
 @endphp
 <div class="app">
@@ -94,17 +88,6 @@
 
         <main class="chat">
             <div class="messages" id="messages"></div>
-            @if ($canActAs)
-                <div class="actas" id="actas">
-                    <label for="act-student">ถามแทนนักศึกษา</label>
-                    <input class="input" id="act-student" inputmode="numeric" maxlength="9" autocomplete="off"
-                           placeholder="รหัสนักศึกษา 9 หลัก (ว่าง = ถามในนามตัวเอง)">
-                    <input class="input" id="act-reason" maxlength="200" placeholder="เหตุผล (จำเป็น) เช่น ทดสอบระบบ">
-                    <div class="actas-note" id="actas-note">
-                        แอดมินถามแทนนักศึกษาได้ทุกคน ทุกครั้งถูกบันทึกใน audit log (ใช้ได้เมื่อ AURA-AGENT เปิดโหมดถามแทน)
-                    </div>
-                </div>
-            @endif
             <form class="composer" id="composer">
                 <textarea class="input" id="input" rows="1" placeholder="พิมพ์คำถาม… (Enter ส่ง, Shift+Enter ขึ้นบรรทัดใหม่)" maxlength="{{ config('chat.max_message_length') }}"></textarea>
                 <button class="btn btn-primary" id="send" type="submit">ส่ง</button>
@@ -155,9 +138,7 @@
     let currentSession = null;
     let busy = false;
     const isAdmin = @json($isAdmin);
-    const canActAs = @json($canActAs);
     const isInstructor = @json($isInstructor);
-    const actStudent = () => canActAs ? $('act-student').value.trim() : '';
 
     const api = (path, options = {}) => fetch(path, {
         credentials: 'same-origin',
@@ -207,7 +188,6 @@
         if (!res.ok) return;
         const { data } = await res.json();
         currentSession = data.id;
-        if (canActAs) { $('act-student').value = data.acting_as_student ?? ''; markActAs(); }
         const box = $('messages');
         box.replaceChildren();
         for (const m of data.messages) addMessage(m.role, m.content, m.tools_used);
@@ -284,12 +264,6 @@
         if (!question || busy) return;
 
         const payload = { message: question, session_id: currentSession };
-        if (actStudent()) {
-            if (!/^\d{9}$/.test(actStudent())) { alert('รหัสนักศึกษาต้องเป็นตัวเลข 9 หลัก'); return; }
-            if (!$('act-reason').value.trim()) { alert('กรุณาระบุเหตุผลที่ถามแทนนักศึกษา'); $('act-reason').focus(); return; }
-            payload.act_as_student = actStudent();
-            payload.reason = $('act-reason').value.trim();
-        }
 
         busy = true;
         $('send').disabled = true;
@@ -406,16 +380,6 @@
         if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
     });
     $('new-chat').onclick = newChat;
-
-    // ---------- Asking on behalf of a student ----------
-    function markActAs() {
-        $('actas').classList.toggle('active', actStudent() !== '');
-    }
-
-    if (canActAs) {
-        // A conversation belongs to one student, so switching student starts a new chat.
-        $('act-student').addEventListener('change', () => { markActAs(); if (currentSession) newChat(); });
-    }
 
     renderEmpty();
     loadSessions();

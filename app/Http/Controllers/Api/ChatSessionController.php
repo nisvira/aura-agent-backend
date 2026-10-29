@@ -11,10 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
 
-/**
- * Chat history. Every query goes through $request->user()->chatSessions(),
- * so users can only ever see or modify their own sessions.
- */
+
 class ChatSessionController extends Controller
 {
     public function index(Request $request): AnonymousResourceCollection

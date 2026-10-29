@@ -46,8 +46,10 @@ class AppServiceProvider extends ServiceProvider
 
         Gate::define('admin', fn (User $user) => $user->isAdmin());
 
-        // Test console: admins, plus instructors (to ask about their advisees in their own name).
-        Gate::define('console', fn (User $user) => in_array($user->effectiveRole(), [UserRole::Admin, UserRole::Instructor], true));
+        // Console chat: every Passport role plus admins. Instructors ask about their advisees in
+        // their own name, students and staff about themselves; AURA-AGENT scopes each answer to
+        // the Passport token. Users with no role (password-only, not admin) stay out.
+        Gate::define('console', fn (User $user) => $user->effectiveRole() !== null);
 
         // Asking about a student through act_as_student (AURA-AGENT support mode, still to come):
         // admins only. Instructors don't need it — they ask in their own name and AURA-AGENT

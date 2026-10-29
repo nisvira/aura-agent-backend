@@ -23,7 +23,7 @@ Route::middleware('throttle:auth')->group(function () {
     Route::get('/callback', [YruPassportController::class, 'callback']);
 });
 
-// Test console: admins and instructors chat; only admins see status and logs.
+// Console: admins, instructors, students and staff chat; only admins see status and logs.
 Route::middleware(['auth', 'can:console'])->prefix('console')->group(function () {
     Route::get('/', [ConsoleController::class, 'index'])->name('console');
 
